@@ -77,7 +77,8 @@ services:
       # Логотип для сообщений
       - ./vpn_logo.png:/app/vpn_logo.png:ro
     ports:
-      - '${WEB_API_PORT:-8080}:8080'
+      # Cabinet/Caddy reaches the API over bot_network; keep host access local-only.
+      - '127.0.0.1:${WEB_API_PORT:-8080}:8080'
     networks:
       - bot_network
     healthcheck:
