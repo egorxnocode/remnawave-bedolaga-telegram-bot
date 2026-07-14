@@ -366,6 +366,7 @@ def _build_cabinet_main_menu_keyboard(
     is_admin: bool,
     is_moderator: bool,
     balance_kopeks: int = 0,
+    show_purchase_button: bool = False,
 ) -> InlineKeyboardMarkup:
     """Build the main-menu keyboard for Cabinet mode.
 
@@ -429,6 +430,7 @@ def _build_cabinet_main_menu_keyboard(
     )
 
     keyboard_rows: list[list[InlineKeyboardButton]] = []
+    purchase_insert_index: int | None = None
 
     for row_key in row_keys:
         row_def = layout[row_key]
@@ -557,15 +559,54 @@ def _build_cabinet_main_menu_keyboard(
                     continue  # bypass max_per_row chunking
 
         # Split collected buttons into keyboard rows respecting max_per_row
+        row_start_index = len(keyboard_rows)
         if row_buttons:
             for i in range(0, len(row_buttons), max_per_row):
                 keyboard_rows.append(row_buttons[i : i + max_per_row])
+
+        # The purchase CTA should sit directly below the Cabinet launcher.
+        # Remember the end of the row containing an enabled ``home`` button;
+        # if a custom layout omits ``home``, the CTA is prepended below.
+        home_cfg = cached_styles.get('home', {})
+        if (
+            purchase_insert_index is None
+            and 'home' in btn_ids
+            and home_cfg.get('enabled', True)
+            and len(keyboard_rows) > row_start_index
+        ):
+            purchase_insert_index = len(keyboard_rows)
+
+    if show_purchase_button:
+        purchase_button = _cabinet_button(
+            texts.MENU_BUY_SUBSCRIPTION,
+            '/subscription/purchase',
+            'menu_buy',
+            style='primary',
+        )
+        keyboard_rows.insert(purchase_insert_index or 0, [purchase_button])
 
     # -- Moderator panel (only when not admin — admin row handled above) --
     if is_moderator and not is_admin:
         keyboard_rows.append([InlineKeyboardButton(text='🧑‍⚖️ Модерация', callback_data='moderator_panel')])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+
+def _should_show_cabinet_purchase_button(
+    *,
+    has_active_subscription: bool,
+    subscription_is_active: bool,
+    subscription,
+) -> bool:
+    """Show the purchase CTA unless the user has an active paid subscription.
+
+    Trial users still see the CTA so they can convert to a paid tariff without
+    waiting for the trial to expire.  Expired subscriptions also show it.
+    """
+    has_active_paid_subscription = (
+        has_active_subscription and subscription_is_active and not getattr(subscription, 'is_trial', False)
+    )
+    return not has_active_paid_subscription
 
 
 def get_main_menu_keyboard(
@@ -591,6 +632,11 @@ def get_main_menu_keyboard(
             is_admin=is_admin,
             is_moderator=is_moderator,
             balance_kopeks=balance_kopeks,
+            show_purchase_button=_should_show_cabinet_purchase_button(
+                has_active_subscription=has_active_subscription,
+                subscription_is_active=subscription_is_active,
+                subscription=subscription,
+            ),
         )
 
     if settings.DEBUG:
