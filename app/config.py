@@ -197,6 +197,24 @@ class Settings(BaseSettings):
     RESET_TRAFFIC_ON_PAYMENT: bool = False
     RESET_TRAFFIC_ON_TARIFF_SWITCH: bool = True
     RESET_DEVICES_ON_RENEWAL: bool = False
+
+    # Expired-subscription/trial rescue access ("Спасательный круг"). The real
+    # end_date remains in Bedolaga; only Remnawave receives the temporary date.
+    GRACE_PERIOD_ENABLED: bool = False
+    GRACE_PERIOD_DAYS: int = 5
+    GRACE_PERIOD_TRAFFIC_GB: int = 5
+    GRACE_PERIOD_SQUAD_UUID: str | None = None
+    GRACE_PERIOD_TEST_USER_IDS: str = ''  # Telegram IDs, comma-separated; "all" enables global mode.
+    GRACE_PERIOD_ELIGIBLE_TARIFFS: str = 'Стандартный,Семейный,Добро пожаловать'
+    GRACE_PERIOD_INCLUDE_TRIALS: bool = True
+    GRACE_PERIOD_ENTRY_MAX_AGE_HOURS: int = 24
+    GRACE_PERIOD_CHECK_INTERVAL_SECONDS: int = 60
+    TRAFFIC_GRACE_ENABLED: bool = False
+    TRAFFIC_GRACE_DAYS: int = 5
+    TRAFFIC_GRACE_TRAFFIC_GB: int = 5
+    TRAFFIC_GRACE_SQUAD_UUID: str | None = None
+    TRAFFIC_GRACE_TEST_USER_IDS: str = ''
+    TRAFFIC_GRACE_ELIGIBLE_TARIFFS: str = 'Стандартный,Семейный'
     TARIFF_SWITCH_UPGRADE_ENABLED: bool = True
     TARIFF_SWITCH_DOWNGRADE_ENABLED: bool = True
     # Мастер-переключатель сброса бесплатного периода при переходе на платный.

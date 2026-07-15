@@ -579,7 +579,7 @@ def _build_cabinet_main_menu_keyboard(
     if show_purchase_button:
         purchase_button = _cabinet_button(
             texts.MENU_BUY_SUBSCRIPTION,
-            '/subscription/purchase',
+            '/',
             'menu_buy',
             style='primary',
         )

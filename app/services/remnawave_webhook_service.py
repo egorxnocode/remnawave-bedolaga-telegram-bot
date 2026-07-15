@@ -1002,6 +1002,27 @@ class RemnaWaveWebhookService:
         """Mark subscription as recently updated by webhook to prevent sync overwrite."""
         subscription.last_webhook_update_at = datetime.now(UTC)
 
+    async def _guard_grace_webhook(
+        self,
+        db: AsyncSession,
+        subscription: Subscription,
+        event_name: str,
+    ) -> bool:
+        """Keep temporary GRACE panel values out of the commercial row."""
+        from app.services.grace_period_service import should_preserve_grace_subscription
+
+        if not await should_preserve_grace_subscription(db, subscription):
+            return False
+        self._stamp_webhook_update(subscription)
+        await db.commit()
+        logger.info(
+            'Grace period webhook echo ignored',
+            event_name=event_name,
+            subscription_id=subscription.id,
+            user_id=subscription.user_id,
+        )
+        return True
+
     # ------------------------------------------------------------------
     # User event handlers
     # ------------------------------------------------------------------
@@ -1012,6 +1033,9 @@ class RemnaWaveWebhookService:
         if not subscription:
             # Подписка уже удалена из БД — фантомный хук от панели, игнорируем
             logger.info('Webhook user.expired: подписка не найдена в БД (уже удалена), пропуск', user_id=user.id)
+            return
+
+        if await self._guard_grace_webhook(db, subscription, 'user.expired'):
             return
 
         # Суточные подписки управляются DailySubscriptionService.
@@ -1053,6 +1077,9 @@ class RemnaWaveWebhookService:
         if not subscription:
             # Подписка уже удалена из БД — фантомный хук от панели, игнорируем
             logger.info('Webhook user.disabled: подписка не найдена в БД (уже удалена), пропуск', user_id=user.id)
+            return
+
+        if await self._guard_grace_webhook(db, subscription, 'user.disabled'):
             return
 
         # Суточные подписки управляются DailySubscriptionService — не деактивируем
@@ -1102,6 +1129,9 @@ class RemnaWaveWebhookService:
             logger.info('Webhook user.enabled: подписка не найдена в БД (уже удалена), пропуск', user_id=user.id)
             return
 
+        if await self._guard_grace_webhook(db, subscription, 'user.enabled'):
+            return
+
         self._stamp_webhook_update(subscription)
         if subscription.status in (SubscriptionStatus.DISABLED.value, SubscriptionStatus.LIMITED.value):
             await reactivate_subscription(db, subscription)
@@ -1118,6 +1148,9 @@ class RemnaWaveWebhookService:
     ) -> None:
         if not subscription:
             logger.info('Webhook user.limited: подписка не найдена в БД (уже удалена), пропуск', user_id=user.id)
+            return
+
+        if await self._guard_grace_webhook(db, subscription, 'user.limited'):
             return
 
         self._stamp_webhook_update(subscription)
@@ -1143,6 +1176,9 @@ class RemnaWaveWebhookService:
             logger.info('Webhook user.traffic_reset: подписка не найдена в БД (уже удалена), пропуск', user_id=user.id)
             return
 
+        if await self._guard_grace_webhook(db, subscription, 'user.traffic_reset'):
+            return
+
         self._stamp_webhook_update(subscription)
         await update_subscription_usage(db, subscription, 0.0)
         # Re-enable if was disabled/limited due to traffic limit
@@ -1162,6 +1198,9 @@ class RemnaWaveWebhookService:
     ) -> None:
         """Sync subscription fields from webhook payload without notifying user."""
         if not subscription:
+            return
+
+        if await self._guard_grace_webhook(db, subscription, 'user.modified'):
             return
 
         changed = False

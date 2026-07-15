@@ -2318,6 +2318,49 @@ class Subscription(Base):
         return True
 
 
+class GracePeriodState(Base):
+    """One immutable rescue-access cycle for an expired paid subscription.
+
+    ``real_end_date`` is the subscription/trial expiry stored by Bedolaga. The
+    temporary panel expiry lives in ``grace_expires_at`` and must never be
+    copied back into ``Subscription.end_date`` by webhook synchronisation.
+    """
+
+    __tablename__ = 'grace_period_states'
+    __table_args__ = (
+        Index('ix_grace_period_state', 'state'),
+        Index(
+            'uq_grace_period_open_kind',
+            'subscription_id',
+            'kind',
+            unique=True,
+            postgresql_where=text("state IN ('activating','active','activation_failed','closing')"),
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    subscription_id = Column(Integer, ForeignKey('subscriptions.id', ondelete='CASCADE'), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    remnawave_uuid = Column(String(255), nullable=False, index=True)
+
+    kind = Column(String(20), nullable=False, default='expiry', index=True)
+    state = Column(String(20), nullable=False, default='activating')
+    real_end_date = Column(AwareDateTime(), nullable=False)
+    grace_started_at = Column(AwareDateTime(), nullable=False, default=func.now())
+    grace_expires_at = Column(AwareDateTime(), nullable=False)
+
+    original_squads = Column(JSON, nullable=False, default=list)
+    original_traffic_limit_bytes = Column(BigInteger, nullable=False, default=0)
+    original_device_limit = Column(Integer, nullable=True)
+    rescue_traffic_limit_bytes = Column(BigInteger, nullable=False, default=0)
+
+    restored_at = Column(AwareDateTime(), nullable=True)
+    closed_at = Column(AwareDateTime(), nullable=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(AwareDateTime(), default=func.now(), nullable=False)
+    updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class TrafficPurchase(Base):
     """Докупка трафика с индивидуальной датой истечения."""
 
