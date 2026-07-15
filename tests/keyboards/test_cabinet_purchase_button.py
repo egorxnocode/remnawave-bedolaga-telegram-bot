@@ -38,7 +38,7 @@ def test_should_show_purchase_button_only_without_active_paid_subscription(
     )
 
 
-def test_purchase_button_opens_cabinet_purchase_below_home(
+def test_purchase_button_opens_cabinet_home_below_home(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, 'MINIAPP_CUSTOM_URL', 'https://cabinet.example.com', raising=False)
@@ -75,7 +75,7 @@ def test_purchase_button_opens_cabinet_purchase_below_home(
         'Новости',
     ]
     assert rows[1][0].web_app is not None
-    assert rows[1][0].web_app.url == 'https://cabinet.example.com/subscription/purchase'
+    assert rows[1][0].web_app.url == 'https://cabinet.example.com'
     assert rows[1][0].style == 'primary'
 
 

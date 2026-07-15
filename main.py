@@ -22,6 +22,7 @@ from app.services.ban_notification_service import ban_notification_service
 from app.services.broadcast_service import broadcast_service
 from app.services.contest_rotation_service import contest_rotation_service
 from app.services.daily_subscription_service import daily_subscription_service
+from app.services.grace_period_service import grace_period_scheduler
 from app.services.log_rotation_service import log_rotation_service
 from app.services.maintenance_service import maintenance_service
 from app.services.monitoring_service import monitoring_service
@@ -174,6 +175,7 @@ async def main():
     version_check_task = None
     traffic_monitoring_task = None
     daily_subscription_task = None
+    grace_period_task = None
     polling_task = None
     web_api_server = None
     telegram_webhook_enabled = False
@@ -625,6 +627,18 @@ async def main():
             stage.log(f'Интервал опроса: {settings.MONITORING_INTERVAL}с')
 
         async with timeline.stage(
+            'Спасательный круг',
+            '🛟',
+            success_message='Спасательный круг запущен',
+        ) as stage:
+            if grace_period_scheduler.is_enabled():
+                grace_period_task = asyncio.create_task(grace_period_scheduler.start_monitoring())
+                stage.log(f'Интервал проверки: {settings.GRACE_PERIOD_CHECK_INTERVAL_SECONDS}с')
+            else:
+                grace_period_task = None
+                stage.skip('Спасательный круг выключен или не полностью настроен')
+
+        async with timeline.stage(
             'Служба техработ',
             '🛡️',
             success_message='Служба техработ запущена',
@@ -745,6 +759,7 @@ async def main():
             f'Техработы: {"Включен" if maintenance_task else "Отключен"}',
             f'Мониторинг трафика: {"Включен" if traffic_monitoring_task else "Отключен"}',
             f'Суточные подписки: {"Включен" if daily_subscription_task else "Отключен"}',
+            f'Спасательный круг: {"Включен" if grace_period_task else "Отключен"}',
             f'Проверка версий: {"Включен" if version_check_task else "Отключен"}',
             f'Отчеты: {"Включен" if reporting_service.is_running() else "Отключен"}',
         ]
@@ -814,6 +829,14 @@ async def main():
                             daily_subscription_task = asyncio.create_task(
                                 daily_subscription_service.start_traffic_reset_monitoring()
                             )
+
+                if grace_period_task and grace_period_task.done():
+                    exception = grace_period_task.exception()
+                    if exception:
+                        logger.error('Спасательный круг завершился с ошибкой', error=exception)
+                        if grace_period_scheduler.is_enabled():
+                            logger.info('🔄 Перезапуск спасательного круга...')
+                            grace_period_task = asyncio.create_task(grace_period_scheduler.start_monitoring())
 
                 if auto_verification_active and not auto_payment_verification_service.is_running():
                     logger.warning('Сервис автопроверки пополнений остановился, пробуем перезапустить...')
@@ -886,6 +909,15 @@ async def main():
             daily_subscription_task.cancel()
             try:
                 await daily_subscription_task
+            except asyncio.CancelledError:
+                pass
+
+        if grace_period_task and not grace_period_task.done():
+            logger.info('ℹ️ Остановка спасательного круга...')
+            grace_period_scheduler.stop_monitoring()
+            grace_period_task.cancel()
+            try:
+                await grace_period_task
             except asyncio.CancelledError:
                 pass
 
