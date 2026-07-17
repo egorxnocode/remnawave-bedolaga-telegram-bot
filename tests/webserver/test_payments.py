@@ -126,6 +126,63 @@ async def test_yookassa_unknown_ip(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.anyio
+async def test_lava_string_type_four_routes_to_recurrent_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, 'LAVA_ENABLED', True, raising=False)
+    monkeypatch.setattr(settings, 'LAVA_SHOP_ID', 'shop', raising=False)
+    monkeypatch.setattr(settings, 'LAVA_SECRET_KEY', 'secret', raising=False)
+    monkeypatch.setattr(settings, 'LAVA_WEBHOOK_SECRET', 'webhook-secret', raising=False)
+    monkeypatch.setattr(settings, 'LAVA_WEBHOOK_PATH', '/lava', raising=False)
+    monkeypatch.setattr(
+        'app.services.lava_service.lava_service.verify_webhook_signature',
+        lambda *_args: True,
+    )
+    service = SimpleNamespace(
+        process_lava_recurrent_callback=AsyncMock(return_value=True),
+        process_lava_callback=AsyncMock(return_value=True),
+    )
+
+    async def fake_callback(svc, payload_arg, method):
+        return await getattr(svc, method)(None, payload_arg)
+
+    monkeypatch.setattr('app.webserver.payments._process_payment_service_callback', fake_callback)
+    router = create_payment_router(DummyBot(), service)
+    route = _get_route(router, '/lava')
+    body = json.dumps({'type': '4', 'order_id': 'rec-order'}).encode()
+
+    response = await route.endpoint(_build_request('/lava', body, {'Authorization': 'valid'}))
+
+    assert response.status_code == 200
+    service.process_lava_recurrent_callback.assert_awaited_once()
+    service.process_lava_callback.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_lava_recurrent_processing_failure_requests_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, 'LAVA_ENABLED', True, raising=False)
+    monkeypatch.setattr(settings, 'LAVA_SHOP_ID', 'shop', raising=False)
+    monkeypatch.setattr(settings, 'LAVA_SECRET_KEY', 'secret', raising=False)
+    monkeypatch.setattr(settings, 'LAVA_WEBHOOK_SECRET', 'webhook-secret', raising=False)
+    monkeypatch.setattr(settings, 'LAVA_WEBHOOK_PATH', '/lava', raising=False)
+    monkeypatch.setattr(
+        'app.services.lava_service.lava_service.verify_webhook_signature',
+        lambda *_args: True,
+    )
+    service = SimpleNamespace(process_lava_recurrent_callback=AsyncMock(return_value=False))
+
+    async def fake_callback(svc, payload_arg, method):
+        return await getattr(svc, method)(None, payload_arg)
+
+    monkeypatch.setattr('app.webserver.payments._process_payment_service_callback', fake_callback)
+    router = create_payment_router(DummyBot(), service)
+    route = _get_route(router, '/lava')
+    body = json.dumps({'type': 4, 'order_id': 'missing-order'}).encode()
+
+    response = await route.endpoint(_build_request('/lava', body, {'Authorization': 'valid'}))
+
+    assert response.status_code == 500
+
+
+@pytest.mark.anyio
 async def test_yookassa_forbidden_ip(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, 'YOOKASSA_ENABLED', True, raising=False)
 

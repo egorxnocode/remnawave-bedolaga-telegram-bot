@@ -1628,10 +1628,12 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
                 return JSONResponse({'status': 'error'}, status_code=status.HTTP_400_BAD_REQUEST)
 
             try:
+                is_recurrent = str(payload.get('type') or '') == '4'
+                callback_method = 'process_lava_recurrent_callback' if is_recurrent else 'process_lava_callback'
                 success = await _process_payment_service_callback(
                     payment_service,
                     payload,
-                    'process_lava_callback',
+                    callback_method,
                 )
                 if not success:
                     logger.error(
@@ -1639,8 +1641,12 @@ def create_payment_router(bot: Bot, payment_service: PaymentService) -> APIRoute
                         order_id=payload.get('order_id'),
                         invoice_id=payload.get('invoice_id'),
                     )
+                    if is_recurrent:
+                        return JSONResponse({'status': 'error'}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
             except Exception as e:
                 logger.exception('Lava webhook processing error', error=e)
+                if is_recurrent:
+                    return JSONResponse({'status': 'error'}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
             # Lava ожидает HTTP 200 как подтверждение приёма; иначе будет повтор до 5 раз раз в 150с
             return JSONResponse({'status': 'ok'}, status_code=status.HTTP_200_OK)
 

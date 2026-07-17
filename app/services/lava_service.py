@@ -250,6 +250,72 @@ class LavaService:
         payload: dict[str, Any] = {'shopId': self.shop_id}
         return await self._post('/business/invoice/get-available-tariffs', payload)
 
+    async def create_recurrent_consumer(
+        self,
+        *,
+        consumer_id: str,
+        email: str,
+        name: str | None = None,
+        phone: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            'shopId': self.shop_id,
+            'consumerId': consumer_id,
+            'email': email,
+        }
+        if name:
+            payload['name'] = name
+        if phone:
+            payload['phone'] = phone
+        return await self._post('/business/recurrent/consumer/create', payload)
+
+    async def create_recurrent_subscription(
+        self,
+        *,
+        consumer_id: str,
+        order_id: str,
+        product_id: str,
+    ) -> dict[str, Any]:
+        return await self._post(
+            '/business/recurrent/subscription/subscribe',
+            {
+                'shopId': self.shop_id,
+                'consumerId': consumer_id,
+                'orderId': order_id,
+                'productId': product_id,
+            },
+        )
+
+    async def get_recurrent_subscription_status(
+        self,
+        *,
+        subscription_id: str | None = None,
+        order_id: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {'shopId': self.shop_id}
+        if subscription_id:
+            payload['subscriptionId'] = subscription_id
+        elif order_id:
+            payload['orderId'] = order_id
+        else:
+            raise ValueError('subscription_id or order_id is required')
+        return await self._post('/business/recurrent/subscription/status', payload)
+
+    async def unsubscribe_recurrent_subscription(
+        self,
+        *,
+        subscription_id: str | None = None,
+        order_id: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {'shopId': self.shop_id}
+        if subscription_id:
+            payload['subscriptionId'] = subscription_id
+        elif order_id:
+            payload['orderId'] = order_id
+        else:
+            raise ValueError('subscription_id or order_id is required')
+        return await self._post('/business/recurrent/subscription/unsubscribe', payload)
+
     def verify_webhook_signature(self, raw_body: bytes, received_signature: str) -> bool:
         """Верификация подписи webhook'а.
 

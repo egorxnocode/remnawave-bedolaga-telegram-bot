@@ -1558,6 +1558,102 @@ class LavaPayment(Base):
         )
 
 
+class LavaRecurrentConsumer(Base):
+    """Стабильный subscriber Lava, переживающий повторные попытки подписки."""
+
+    __tablename__ = 'lava_recurrent_consumers'
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, unique=True, index=True)
+    consumer_id = Column(String(128), nullable=False, unique=True, index=True)
+    email = Column(String(255), nullable=False)
+    created_at = Column(AwareDateTime(), default=func.now(), nullable=False)
+    updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship('User', backref='lava_recurrent_consumer')
+
+
+class LavaRecurrentSubscription(Base):
+    """Локальная привязка подписки Lava к тарифной подписке BEDOLAGA."""
+
+    __tablename__ = 'lava_recurrent_subscriptions'
+    __table_args__ = (
+        Index('ix_lava_recurrent_user_status', 'user_id', 'status'),
+        Index(
+            'uq_lava_recurrent_open_subscription',
+            'subscription_id',
+            unique=True,
+            postgresql_where=text("status IN ('created','activated','suspended','cancel_requested')"),
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    subscription_id = Column(Integer, ForeignKey('subscriptions.id', ondelete='SET NULL'), nullable=True, index=True)
+    tariff_id = Column(Integer, ForeignKey('tariffs.id', ondelete='SET NULL'), nullable=True, index=True)
+
+    product_id = Column(String(64), nullable=False, index=True)
+    consumer_id = Column(
+        String(128),
+        ForeignKey('lava_recurrent_consumers.consumer_id', ondelete='RESTRICT'),
+        nullable=False,
+        index=True,
+    )
+    order_id = Column(String(64), nullable=False, unique=True, index=True)
+    lava_subscription_id = Column(String(128), nullable=True, unique=True, index=True)
+    payment_url = Column(Text, nullable=True)
+
+    period_days = Column(Integer, nullable=False)
+    amount_kopeks = Column(Integer, nullable=False)
+    email = Column(String(255), nullable=False)
+    consent_at = Column(AwareDateTime(), nullable=False)
+    consent_ip = Column(String(64), nullable=True)
+    consent_user_agent = Column(String(512), nullable=True)
+    status = Column(String(32), nullable=False, default='created')
+    is_active = Column(Boolean, nullable=False, default=False)
+
+    last_invoice_id = Column(String(128), nullable=True, index=True)
+    payer_details = Column(String(255), nullable=True)
+    next_pay_at = Column(AwareDateTime(), nullable=True)
+    activated_at = Column(AwareDateTime(), nullable=True)
+    suspended_at = Column(AwareDateTime(), nullable=True)
+    deactivated_at = Column(AwareDateTime(), nullable=True)
+    deactivated_reason = Column(Text, nullable=True)
+    callback_payload = Column(JSON, nullable=True)
+
+    created_at = Column(AwareDateTime(), default=func.now(), nullable=False)
+    updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship('User', backref='lava_recurrent_subscriptions')
+    subscription = relationship('Subscription', backref='lava_recurrent_subscriptions')
+    tariff = relationship('Tariff', backref='lava_recurrent_subscriptions')
+
+
+class LavaRecurrentEvent(Base):
+    """Идемпотентный журнал callback-событий рекуррентной подписки Lava."""
+
+    __tablename__ = 'lava_recurrent_events'
+
+    id = Column(Integer, primary_key=True, index=True)
+    recurrent_subscription_id = Column(
+        Integer,
+        ForeignKey('lava_recurrent_subscriptions.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    event_key = Column(String(128), nullable=False, unique=True, index=True)
+    status = Column(String(32), nullable=False, index=True)
+    invoice_id = Column(String(128), nullable=True, index=True)
+    payload = Column(JSON, nullable=False)
+    outcome = Column(String(64), nullable=True)
+    transaction_id = Column(Integer, ForeignKey('transactions.id', ondelete='SET NULL'), nullable=True)
+    processed_at = Column(AwareDateTime(), nullable=True)
+    created_at = Column(AwareDateTime(), default=func.now(), nullable=False)
+
+    recurrent_subscription = relationship('LavaRecurrentSubscription', backref='events')
+    transaction = relationship('Transaction', backref='lava_recurrent_event')
+
+
 class PromoGroup(Base):
     __tablename__ = 'promo_groups'
 
