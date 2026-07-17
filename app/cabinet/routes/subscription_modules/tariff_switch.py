@@ -33,6 +33,17 @@ logger = structlog.get_logger(__name__)
 router = APIRouter()
 
 
+async def _ensure_lava_recurrent_is_disabled(db: AsyncSession, subscription: Subscription) -> None:
+    from app.services.lava_recurrent_service import get_current_recurrent_subscription
+
+    recurrent = await get_current_recurrent_subscription(db, subscription_id=subscription.id)
+    if recurrent:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='Disable Lava recurrent payments before switching tariff',
+        )
+
+
 @router.post('/tariff/switch/preview')
 async def preview_tariff_switch(
     request: TariffPurchaseRequest,
@@ -54,6 +65,7 @@ async def preview_tariff_switch(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='No active subscription with tariff',
         )
+    await _ensure_lava_recurrent_is_disabled(db, subscription)
 
     # Use actual_status for correct status check (handles time-based expiration)
     actual_status = subscription.actual_status
@@ -236,6 +248,7 @@ async def switch_tariff(
         .execution_options(populate_existing=True)
     )
     subscription = locked_result.scalar_one()
+    await _ensure_lava_recurrent_is_disabled(db, subscription)
 
     # Use actual_status for correct status check (handles time-based expiration)
     actual_status = subscription.actual_status

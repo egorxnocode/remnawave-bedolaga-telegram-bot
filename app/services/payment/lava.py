@@ -367,6 +367,15 @@ class LavaPaymentMixin:
             logger.exception('Lava webhook: ошибка обработки', error=e)
             return False
 
+    async def process_lava_recurrent_callback(
+        self,
+        db: AsyncSession,
+        payload: dict[str, Any],
+    ) -> bool:
+        from app.services.lava_recurrent_service import process_lava_recurrent_callback
+
+        return await process_lava_recurrent_callback(db, payload)
+
     async def _finalize_lava_payment(
         self,
         db: AsyncSession,

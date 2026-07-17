@@ -1664,6 +1664,9 @@ class BackupService:
             'antilopay_payments',
             'apple_transactions',
             'saved_payment_methods',
+            'lava_recurrent_consumers',
+            'lava_recurrent_subscriptions',
+            'lava_recurrent_events',
             # --- Content/config ---
             'pinned_messages',
             'main_menu_buttons',

@@ -923,6 +923,18 @@ class Settings(BaseSettings):
     LAVA_CARD_DISPLAY_NAME: str = 'Карта (Lava)'
     LAVA_SBP_ENABLED: bool = False
     LAVA_SBP_DISPLAY_NAME: str = 'СБП (Lava)'
+    # Recurrent products are configured per merchant; IDs are public UUIDs.
+    LAVA_RECURRENT_ENABLED: bool = False
+    LAVA_RECURRENT_STANDARD_TARIFF_NAME: str = 'Стандартный'
+    LAVA_RECURRENT_FAMILY_TARIFF_NAME: str = 'Семейный'
+    LAVA_RECURRENT_STANDARD_30_PRODUCT_ID: str | None = None
+    LAVA_RECURRENT_STANDARD_90_PRODUCT_ID: str | None = None
+    LAVA_RECURRENT_STANDARD_180_PRODUCT_ID: str | None = None
+    LAVA_RECURRENT_STANDARD_365_PRODUCT_ID: str | None = None
+    LAVA_RECURRENT_FAMILY_30_PRODUCT_ID: str | None = None
+    LAVA_RECURRENT_FAMILY_90_PRODUCT_ID: str | None = None
+    LAVA_RECURRENT_FAMILY_180_PRODUCT_ID: str | None = None
+    LAVA_RECURRENT_FAMILY_365_PRODUCT_ID: str | None = None
 
     # Etoplatezhi (paymentpage.etoplatezhi.ru)
     ETOPLATEZHI_ENABLED: bool = False
@@ -2721,6 +2733,31 @@ class Settings(BaseSettings):
 
     def is_lava_sbp_enabled(self) -> bool:
         return self.LAVA_SBP_ENABLED and self.is_lava_enabled()
+
+    def get_lava_recurrent_product_map(self) -> dict[tuple[str, int], str]:
+        configured = {
+            (self.LAVA_RECURRENT_STANDARD_TARIFF_NAME, 30): self.LAVA_RECURRENT_STANDARD_30_PRODUCT_ID,
+            (self.LAVA_RECURRENT_STANDARD_TARIFF_NAME, 90): self.LAVA_RECURRENT_STANDARD_90_PRODUCT_ID,
+            (self.LAVA_RECURRENT_STANDARD_TARIFF_NAME, 180): self.LAVA_RECURRENT_STANDARD_180_PRODUCT_ID,
+            (self.LAVA_RECURRENT_STANDARD_TARIFF_NAME, 365): self.LAVA_RECURRENT_STANDARD_365_PRODUCT_ID,
+            (self.LAVA_RECURRENT_FAMILY_TARIFF_NAME, 30): self.LAVA_RECURRENT_FAMILY_30_PRODUCT_ID,
+            (self.LAVA_RECURRENT_FAMILY_TARIFF_NAME, 90): self.LAVA_RECURRENT_FAMILY_90_PRODUCT_ID,
+            (self.LAVA_RECURRENT_FAMILY_TARIFF_NAME, 180): self.LAVA_RECURRENT_FAMILY_180_PRODUCT_ID,
+            (self.LAVA_RECURRENT_FAMILY_TARIFF_NAME, 365): self.LAVA_RECURRENT_FAMILY_365_PRODUCT_ID,
+        }
+        return {
+            (str(tariff_name).strip(), period_days): str(product_id).strip()
+            for (tariff_name, period_days), product_id in configured.items()
+            if product_id and str(product_id).strip()
+        }
+
+    def is_lava_recurrent_enabled(self) -> bool:
+        return (
+            self.LAVA_RECURRENT_ENABLED
+            and self.ENABLE_AUTOPAY
+            and self.is_lava_enabled()
+            and bool(self.get_lava_recurrent_product_map())
+        )
 
     def get_lava_sbp_display_name(self) -> str:
         name = (self.LAVA_SBP_DISPLAY_NAME or '').strip()

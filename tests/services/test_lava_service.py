@@ -229,3 +229,65 @@ def test_strip_url_query_removes_query_and_fragment() -> None:
         'https://c.example/balance/top-up/result/lava'
     )
     assert _strip_url_query('https://c.example/p') == 'https://c.example/p'
+
+
+@pytest.mark.asyncio
+async def test_create_recurrent_consumer_contract(service: LavaService) -> None:
+    with patch.object(service, '_post', AsyncMock(return_value={'status': 200})) as post:
+        await service.create_recurrent_consumer(
+            consumer_id='bedolaga-user-42',
+            email='user@example.com',
+            name='User 42',
+        )
+
+    post.assert_awaited_once_with(
+        '/business/recurrent/consumer/create',
+        {
+            'shopId': 'shop-xyz',
+            'consumerId': 'bedolaga-user-42',
+            'email': 'user@example.com',
+            'name': 'User 42',
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_recurrent_subscription_contract(service: LavaService) -> None:
+    with patch.object(service, '_post', AsyncMock(return_value={'status': 200})) as post:
+        await service.create_recurrent_subscription(
+            consumer_id='bedolaga-user-42',
+            order_id='lavarec42_abc',
+            product_id='product-uuid',
+        )
+
+    post.assert_awaited_once_with(
+        '/business/recurrent/subscription/subscribe',
+        {
+            'shopId': 'shop-xyz',
+            'consumerId': 'bedolaga-user-42',
+            'orderId': 'lavarec42_abc',
+            'productId': 'product-uuid',
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_recurrent_status_and_unsubscribe_accept_subscription_id(service: LavaService) -> None:
+    with patch.object(service, '_post', AsyncMock(return_value={'status': 200})) as post:
+        await service.get_recurrent_subscription_status(subscription_id='sub-uuid')
+        await service.unsubscribe_recurrent_subscription(subscription_id='sub-uuid')
+
+    assert post.await_args_list[0].args == (
+        '/business/recurrent/subscription/status',
+        {'shopId': 'shop-xyz', 'subscriptionId': 'sub-uuid'},
+    )
+    assert post.await_args_list[1].args == (
+        '/business/recurrent/subscription/unsubscribe',
+        {'shopId': 'shop-xyz', 'subscriptionId': 'sub-uuid'},
+    )
+
+
+@pytest.mark.asyncio
+async def test_recurrent_status_requires_identifier(service: LavaService) -> None:
+    with pytest.raises(ValueError, match='subscription_id or order_id is required'):
+        await service.get_recurrent_subscription_status()

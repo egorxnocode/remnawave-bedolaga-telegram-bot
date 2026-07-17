@@ -1,8 +1,9 @@
 """Subscription schemas for cabinet."""
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 class ServerInfo(BaseModel):
@@ -149,6 +150,12 @@ class AutopayUpdateRequest(BaseModel):
 
     enabled: bool
     days_before: int | None = Field(None, ge=1, le=30, description='Days before expiration to charge')
+
+
+class LavaRecurrentSubscribeRequest(BaseModel):
+    period_days: int = Field(..., description='Configured recurrent period in days')
+    email: EmailStr | None = Field(None, description='Required by Lava when the Cabinet account has no email')
+    accepted_terms: Literal[True] = Field(..., description='Explicit consent to recurrent charges')
 
 
 class TrialActivateRequest(BaseModel):
