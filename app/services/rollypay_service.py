@@ -74,6 +74,7 @@ class RollyPayService:
         fail_redirect_url: str | None = None,
         customer_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        test: bool = False,
     ) -> dict[str, Any]:
         """
         Создает платеж через API RollyPay.
@@ -99,6 +100,8 @@ class RollyPayService:
             payload['customer_id'] = customer_id
         if metadata:
             payload['metadata'] = metadata
+        if test:
+            payload['test'] = True
 
         logger.info(
             'RollyPay API create_payment',
@@ -106,6 +109,7 @@ class RollyPayService:
             amount=amount_value,
             currency=currency,
             payment_method=payment_method,
+            test=test,
         )
 
         try:
