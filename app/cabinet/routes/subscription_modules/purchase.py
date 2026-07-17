@@ -35,6 +35,7 @@ from app.database.crud.transaction import create_transaction
 from app.database.crud.user import add_user_balance, get_user_by_id, subtract_user_balance
 from app.database.database import AsyncSessionLocal
 from app.database.models import PaymentMethod, Subscription, Tariff, Transaction, TransactionType, User
+from app.services.lava_recurrent_service import configured_product_id
 from app.services.notification_delivery_service import (
     NotificationType,
     notification_delivery_service,
@@ -304,6 +305,12 @@ async def _build_tariff_response(
         'daily_price_kopeks': daily_price,
         # Сброс трафика
         'traffic_reset_mode': tariff.traffic_reset_mode or settings.DEFAULT_TRAFFIC_RESET_STRATEGY,
+        'lava_recurrent_periods': [
+            int(period)
+            for period in (tariff.period_prices or {})
+            if configured_product_id(tariff.name, int(period))
+            and int((tariff.period_prices or {})[period]) > 0
+        ] if settings.is_lava_recurrent_enabled() and not tariff.is_daily else [],
     }
 
     # Add promo group info if user has discounts
@@ -394,6 +401,20 @@ async def get_purchase_options(
                     tariff_data['is_purchased'] = False
                 tariff_responses.append(tariff_data)
 
+            trial_subscription = (
+                await db.execute(
+                    select(Subscription)
+                    .where(Subscription.user_id == user.id, Subscription.is_trial.is_(True))
+                    .order_by(Subscription.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            recurrent_checkout_eligible = bool(
+                settings.is_lava_recurrent_enabled()
+                and trial_subscription
+                and not user.has_had_paid_subscription
+            )
+
             return {
                 'sales_mode': 'tariffs',
                 'tariffs': tariff_responses,
@@ -412,6 +433,9 @@ async def get_purchase_options(
                 # Направления смены тарифа
                 'tariff_switch_upgrade_enabled': settings.TARIFF_SWITCH_UPGRADE_ENABLED,
                 'tariff_switch_downgrade_enabled': settings.TARIFF_SWITCH_DOWNGRADE_ENABLED,
+                'lava_recurrent_checkout_eligible': recurrent_checkout_eligible,
+                'lava_recurrent_trial_subscription_id': trial_subscription.id if recurrent_checkout_eligible else None,
+                'lava_recurrent_email_required': not bool(user.email),
             }
 
         # Classic mode - return periods

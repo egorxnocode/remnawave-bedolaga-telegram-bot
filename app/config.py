@@ -2754,7 +2754,6 @@ class Settings(BaseSettings):
     def is_lava_recurrent_enabled(self) -> bool:
         return (
             self.LAVA_RECURRENT_ENABLED
-            and self.ENABLE_AUTOPAY
             and self.is_lava_enabled()
             and bool(self.get_lava_recurrent_product_map())
         )

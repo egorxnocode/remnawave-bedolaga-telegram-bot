@@ -2,24 +2,22 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.models import User
+from app.database.models import Subscription, Tariff, User
 from app.services.lava_recurrent_service import (
-    SETUP_WINDOW_DAYS,
     cancel_recurrent_subscription,
-    configured_product_id,
     get_current_recurrent_subscription,
     start_recurrent_subscription,
 )
 from app.services.lava_service import LavaAPIError
+from app.services.pricing_engine import pricing_engine
 
 from ...dependencies import get_cabinet_db, get_current_cabinet_user
-from ...schemas.subscription import LavaRecurrentSubscribeRequest
+from ...schemas.subscription import LavaRecurrentCheckoutRequest
 from .helpers import resolve_subscription
 
 
@@ -52,60 +50,48 @@ async def get_lava_recurrent_state(
     subscription = await resolve_subscription(db, user, subscription_id)
     if not subscription:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='No subscription found')
-    await db.refresh(subscription, ['tariff'])
-    tariff = subscription.tariff
-    plans: list[dict] = []
-    if tariff and not tariff.is_daily:
-        for period_days in tariff.get_available_periods():
-            product_id = configured_product_id(tariff.name, period_days)
-            price = tariff.get_price_for_period(period_days)
-            if product_id and price:
-                plans.append(
-                    {
-                        'period_days': period_days,
-                        'amount_kopeks': int(price),
-                        'product_id': product_id,
-                    }
-                )
     current = await get_current_recurrent_subscription(
         db,
         subscription_id=subscription.id,
         user_id=user.id,
     )
-    available_from = None
-    inside_setup_window = True
-    if subscription.end_date and subscription.end_date > datetime.now(UTC):
-        available_at = subscription.end_date - timedelta(days=SETUP_WINDOW_DAYS)
-        if available_at > datetime.now(UTC):
-            available_from = available_at.isoformat()
-            inside_setup_window = False
     return {
         'enabled': settings.is_lava_recurrent_enabled(),
-        'eligible': bool(plans) and subscription.is_trial is False and inside_setup_window,
-        'available_from': available_from,
-        'email_required': not bool(user.email),
-        'plans': plans,
         'subscription': _serialize(current) or None,
     }
 
 
-@router.post('/subscribe')
-async def subscribe_lava_recurrent(
-    request: LavaRecurrentSubscribeRequest,
+@router.post('/checkout')
+async def checkout_lava_recurrent(
+    request: LavaRecurrentCheckoutRequest,
     http_request: Request,
     user: User = Depends(get_current_cabinet_user),
     db: AsyncSession = Depends(get_cabinet_db),
-    subscription_id: int | None = Query(None),
 ):
-    subscription = await resolve_subscription(db, user, subscription_id)
+    subscription = (
+        await db.execute(
+            select(Subscription).where(
+                Subscription.id == request.subscription_id,
+                Subscription.user_id == user.id,
+            )
+        )
+    ).scalar_one_or_none()
     if not subscription:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='No subscription found')
-    if subscription.is_trial is not False:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Trial subscriptions are not eligible')
-    await db.refresh(subscription, ['tariff'])
-    tariff = subscription.tariff
-    if not tariff or tariff.is_daily:
+    if subscription.is_trial is not True or user.has_had_paid_subscription:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Only the first purchase after trial is eligible')
+    tariff = await db.get(Tariff, request.tariff_id)
+    if not tariff or not tariff.is_active or tariff.is_daily:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Tariff is not eligible')
+    raw_price = tariff.get_price_for_period(request.period_days)
+    product_id = settings.get_lava_recurrent_product_map().get((tariff.name.strip(), request.period_days))
+    if not product_id or raw_price is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Recurrent product is not configured')
+    pricing = await pricing_engine.calculate_tariff_purchase_price(
+        tariff, request.period_days, device_limit=tariff.device_limit, custom_traffic_gb=None, user=user
+    )
+    if pricing.final_total != int(raw_price):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Recurrent checkout is unavailable with discounts or add-ons')
     email = str(request.email or user.email or '').strip()
     if not email:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='Email is required')
@@ -125,6 +111,11 @@ async def subscribe_lava_recurrent(
     except LavaAPIError as error:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=error.message) from error
     return {'payment_url': payment_url, 'subscription': _serialize(record)}
+
+
+@router.post('/subscribe', status_code=status.HTTP_410_GONE)
+async def rejected_standalone_recurrent_checkout():
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail='Use recurrent checkout during the first purchase after trial')
 
 
 @router.delete('')

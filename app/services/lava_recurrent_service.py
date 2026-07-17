@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database.crud.subscription import extend_subscription
 from app.database.crud.transaction import create_transaction, emit_transaction_side_effects
 from app.database.models import (
     LavaRecurrentConsumer,
@@ -31,7 +32,6 @@ from app.services.lava_service import LavaAPIError, lava_service
 
 logger = structlog.get_logger(__name__)
 OPEN_STATUSES = {'created', 'activated', 'suspended', 'cancel_requested'}
-SETUP_WINDOW_DAYS = 3
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -103,6 +103,10 @@ async def start_recurrent_subscription(
     ).scalar_one_or_none()
     if locked_subscription is None:
         raise ValueError('Subscription not found')
+    if locked_subscription.is_trial is not True or user.has_had_paid_subscription:
+        raise ValueError('Lava recurrent is available only for the first purchase after trial')
+    if tariff.is_daily:
+        raise ValueError('Daily tariffs are not eligible for Lava recurrent')
     product_id = configured_product_id(tariff.name, period_days)
     if not product_id:
         raise ValueError('No Lava recurrent product configured for this tariff period')
@@ -111,11 +115,6 @@ async def start_recurrent_subscription(
         raise ValueError('Tariff period is not available')
     if await get_current_recurrent_subscription(db, subscription_id=subscription.id, user_id=user.id):
         raise ValueError('Lava recurrent subscription already exists')
-    if subscription.end_date and subscription.end_date > datetime.now(UTC):
-        seconds_left = (subscription.end_date - datetime.now(UTC)).total_seconds()
-        if seconds_left > SETUP_WINDOW_DAYS * 86400:
-            raise ValueError('Lava recurrent setup is available during the last 3 days of the subscription')
-
     consumer = (
         await db.execute(select(LavaRecurrentConsumer).where(LavaRecurrentConsumer.user_id == user.id).limit(1))
     ).scalar_one_or_none()
@@ -196,9 +195,6 @@ async def cancel_recurrent_subscription(
     record.status = 'deactivated' if data.get('unsubscribed') is True else 'cancel_requested'
     record.is_active = False
     record.deactivated_at = datetime.now(UTC) if record.status == 'deactivated' else None
-    subscription = await db.get(Subscription, record.subscription_id) if record.subscription_id else None
-    if subscription:
-        subscription.autopay_enabled = False
     await db.commit()
     await db.refresh(record)
     return record
@@ -273,6 +269,8 @@ async def process_lava_recurrent_callback(db: AsyncSession, payload: dict[str, A
             return False
 
         external_id = f'lava-recurrent:{invoice_id}'
+        is_first_payment = False
+        description = 'Рекуррентное продление тарифа через Lava'
         transaction = (
             await db.execute(
                 select(Transaction).where(
@@ -285,22 +283,56 @@ async def process_lava_recurrent_callback(db: AsyncSession, payload: dict[str, A
             locked_user = (
                 await db.execute(select(User).where(User.id == record.user_id).with_for_update())
             ).scalar_one()
-            locked_user.balance_kopeks += record.amount_kopeks
+            subscription = (
+                await db.execute(
+                    select(Subscription).where(Subscription.id == record.subscription_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            tariff = await db.get(Tariff, record.tariff_id)
+            if subscription is None or tariff is None:
+                await db.rollback()
+                logger.error('Lava recurrent webhook: local subscription or tariff missing', order_id=order_id)
+                return False
+            is_first_payment = subscription.is_trial is True
+            if is_first_payment and locked_user.has_had_paid_subscription:
+                await db.rollback()
+                logger.error('Lava recurrent webhook: first purchase already consumed', order_id=order_id)
+                return False
+            squads = list(tariff.allowed_squads or [])
+            if not squads:
+                from app.database.crud.server_squad import get_all_server_squads
+
+                all_servers, _ = await get_all_server_squads(db, available_only=True)
+                squads = [server.squad_uuid for server in all_servers if server.squad_uuid]
+            await extend_subscription(
+                db,
+                subscription,
+                record.period_days,
+                tariff_id=tariff.id,
+                traffic_limit_gb=tariff.traffic_limit_gb,
+                device_limit=tariff.device_limit,
+                connected_squads=squads,
+                commit=False,
+            )
+            subscription.autopay_enabled = False
+            subscription.autopay_period_days = None
+            locked_user.has_had_paid_subscription = True
             locked_user.updated_at = datetime.now(UTC)
+            description = (
+                f"Первая покупка тарифа '{tariff.name}' через Lava с рекуррентными платежами"
+                if is_first_payment
+                else f"Рекуррентное продление тарифа '{tariff.name}' через Lava"
+            )
             transaction = await create_transaction(
                 db,
                 user_id=record.user_id,
-                type=TransactionType.DEPOSIT,
+                type=TransactionType.SUBSCRIPTION_PAYMENT,
                 amount_kopeks=record.amount_kopeks,
-                description='Рекуррентное пополнение через Lava',
+                description=description,
                 payment_method=PaymentMethod.LAVA,
                 external_id=external_id,
                 commit=False,
             )
-        subscription = await db.get(Subscription, record.subscription_id) if record.subscription_id else None
-        if subscription:
-            subscription.autopay_enabled = True
-            subscription.autopay_period_days = record.period_days
         record.status = 'activated'
         record.is_active = True
         record.last_invoice_id = invoice_id
@@ -308,7 +340,7 @@ async def process_lava_recurrent_callback(db: AsyncSession, payload: dict[str, A
         record.next_pay_at = _parse_datetime(payload.get('next_pay_time'))
         record.activated_at = _parse_datetime(payload.get('activation_time')) or datetime.now(UTC)
         event.transaction_id = transaction.id
-        event.outcome = 'balance_credited'
+        event.outcome = 'subscription_activated' if is_first_payment else 'subscription_extended'
         event.processed_at = datetime.now(UTC)
         await db.commit()
         await emit_transaction_side_effects(
@@ -316,11 +348,21 @@ async def process_lava_recurrent_callback(db: AsyncSession, payload: dict[str, A
             transaction,
             amount_kopeks=record.amount_kopeks,
             user_id=record.user_id,
-            type=TransactionType.DEPOSIT,
+            type=TransactionType.SUBSCRIPTION_PAYMENT,
             payment_method=PaymentMethod.LAVA,
             external_id=external_id,
-            description='Рекуррентное пополнение через Lava',
+            description=description,
         )
+        try:
+            from app.services.remnawave_retry_queue import remnawave_retry_queue
+
+            remnawave_retry_queue.enqueue(
+                subscription_id=record.subscription_id,
+                user_id=record.user_id,
+                action='update',
+            )
+        except Exception as error:
+            logger.error('Failed to enqueue RemnaWave sync after Lava recurrent payment', error=error)
         return True
 
     if incoming_status == 'suspended':
@@ -335,9 +377,6 @@ async def process_lava_recurrent_callback(db: AsyncSession, payload: dict[str, A
         record.is_active = False
         record.deactivated_at = _parse_datetime(payload.get('deactivation_time')) or datetime.now(UTC)
         record.deactivated_reason = str(payload.get('deactivated_reason') or '') or None
-        subscription = await db.get(Subscription, record.subscription_id) if record.subscription_id else None
-        if subscription:
-            subscription.autopay_enabled = False
         event.outcome = 'deactivated'
     event.processed_at = datetime.now(UTC)
     await db.commit()

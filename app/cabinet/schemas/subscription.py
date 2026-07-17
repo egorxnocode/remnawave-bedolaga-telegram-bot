@@ -152,8 +152,10 @@ class AutopayUpdateRequest(BaseModel):
     days_before: int | None = Field(None, ge=1, le=30, description='Days before expiration to charge')
 
 
-class LavaRecurrentSubscribeRequest(BaseModel):
+class LavaRecurrentCheckoutRequest(BaseModel):
+    tariff_id: int = Field(..., ge=1, description='Tariff selected during trial conversion')
     period_days: int = Field(..., description='Configured recurrent period in days')
+    subscription_id: int = Field(..., ge=1, description='Trial subscription being converted')
     email: EmailStr | None = Field(None, description='Required by Lava when the Cabinet account has no email')
     accepted_terms: Literal[True] = Field(..., description='Explicit consent to recurrent charges')
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -44,11 +43,12 @@ def test_activated_event_key_is_stable_when_non_identity_fields_change() -> None
 
 
 @pytest.mark.asyncio
-async def test_activated_callback_credits_balance_once_and_enables_autopay() -> None:
+async def test_activated_callback_converts_trial_without_crediting_balance() -> None:
     record = SimpleNamespace(
         id=7,
         user_id=42,
         subscription_id=9,
+        tariff_id=3,
         order_id='lavarec42_order',
         lava_subscription_id='lava-sub-1',
         product_id='lava-product-1',
@@ -64,12 +64,13 @@ async def test_activated_callback_credits_balance_once_and_enables_autopay() -> 
         next_pay_at=None,
         activated_at=None,
     )
-    user = SimpleNamespace(id=42, balance_kopeks=1000, updated_at=None)
-    subscription = SimpleNamespace(id=9, autopay_enabled=False, autopay_period_days=None)
+    user = SimpleNamespace(id=42, balance_kopeks=1000, updated_at=None, has_had_paid_subscription=False)
+    subscription = SimpleNamespace(id=9, is_trial=True, autopay_enabled=False, autopay_period_days=None)
+    tariff = SimpleNamespace(id=3, name='Стандартный', allowed_squads=['squad'], traffic_limit_gb=100, device_limit=3)
     transaction = SimpleNamespace(id=77)
     db = MagicMock()
-    db.execute = AsyncMock(side_effect=[_result(record), _result(None), _result(None), _result(user)])
-    db.get = AsyncMock(return_value=subscription)
+    db.execute = AsyncMock(side_effect=[_result(record), _result(None), _result(None), _result(user), _result(subscription)])
+    db.get = AsyncMock(return_value=tariff)
     db.commit = AsyncMock()
     db.add = MagicMock()
 
@@ -82,21 +83,24 @@ async def test_activated_callback_credits_balance_once_and_enables_autopay() -> 
             'app.services.lava_recurrent_service.emit_transaction_side_effects',
             AsyncMock(),
         ) as emit_side_effects,
+        patch('app.services.lava_recurrent_service.extend_subscription', AsyncMock()) as extend,
     ):
         assert await process_lava_recurrent_callback(db, _payload()) is True
 
-    assert user.balance_kopeks == 28900
-    assert subscription.autopay_enabled is True
-    assert subscription.autopay_period_days == 30
+    assert user.balance_kopeks == 1000
+    assert user.has_had_paid_subscription is True
+    assert subscription.autopay_enabled is False
+    assert subscription.autopay_period_days is None
+    extend.assert_awaited_once()
     assert record.status == 'activated'
     assert record.is_active is True
     assert record.last_invoice_id == 'lava-invoice-1'
     create_transaction.assert_awaited_once_with(
         db,
         user_id=42,
-        type=TransactionType.DEPOSIT,
+        type=TransactionType.SUBSCRIPTION_PAYMENT,
         amount_kopeks=27900,
-        description='Рекуррентное пополнение через Lava',
+        description="Первая покупка тарифа 'Стандартный' через Lava с рекуррентными платежами",
         payment_method=PaymentMethod.LAVA,
         external_id='lava-recurrent:lava-invoice-1',
         commit=False,
@@ -151,7 +155,7 @@ async def test_invalid_callback_amount_is_rejected_without_credit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_setup_is_blocked_until_last_three_days(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_setup_is_blocked_after_first_paid_purchase(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.config import settings
 
     monkeypatch.setattr(type(settings), 'is_lava_recurrent_enabled', lambda _self: True)
@@ -160,13 +164,13 @@ async def test_setup_is_blocked_until_last_three_days(monkeypatch: pytest.Monkey
         'get_lava_recurrent_product_map',
         lambda _self: {('Стандартный', 30): 'product'},
     )
-    user = SimpleNamespace(id=42)
-    subscription = SimpleNamespace(id=9, end_date=datetime.now(UTC) + timedelta(days=4))
-    tariff = SimpleNamespace(name='Стандартный', get_price_for_period=lambda _days: 27900)
+    user = SimpleNamespace(id=42, has_had_paid_subscription=True)
+    subscription = SimpleNamespace(id=9, is_trial=True)
+    tariff = SimpleNamespace(name='Стандартный', is_daily=False, get_price_for_period=lambda _days: 27900)
     db = MagicMock()
     db.execute = AsyncMock(side_effect=[_result(subscription), _result(None)])
 
-    with pytest.raises(ValueError, match='last 3 days'):
+    with pytest.raises(ValueError, match='first purchase after trial'):
         await start_recurrent_subscription(
             db,
             user=user,
