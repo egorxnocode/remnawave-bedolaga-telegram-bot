@@ -24,6 +24,7 @@ ROLLYPAY_STATUS_MAP: dict[str, tuple[str, bool]] = {
     'expired': ('expired', False),
     'canceled': ('canceled', False),
     'chargeback': ('chargeback', False),
+    'refunded': ('refunded', False),
 }
 
 
@@ -41,6 +42,7 @@ class RollyPayPaymentMixin:
         language: str = 'ru',
         payment_method_type: str | None = None,
         return_url: str | None = None,
+        test_mode: bool = False,
     ) -> dict[str, Any] | None:
         """
         Создает платеж RollyPay.
@@ -104,6 +106,7 @@ class RollyPayPaymentMixin:
                 redirect_url=return_url or settings.ROLLYPAY_RETURN_URL,
                 customer_id=str(tg_id),
                 metadata=metadata,
+                test=test_mode,
             )
 
             payment_url = result.get('pay_url')
@@ -224,11 +227,6 @@ class RollyPayPaymentMixin:
                 return False
             payment = locked
 
-            # Проверка дублирования (re-check from locked row)
-            if payment.is_paid:
-                logger.info('RollyPay webhook: платеж уже обработан', order_id=payment.order_id)
-                return True
-
             # Маппинг статуса
             status_info = ROLLYPAY_STATUS_MAP.get(rollypay_status, ('pending', False))
             internal_status, is_paid = status_info
@@ -246,6 +244,33 @@ class RollyPayPaymentMixin:
                 'amount': payload.get('amount'),
                 'currency': payload.get('currency'),
             }
+
+            # Reversal events can arrive after the original payment was already
+            # credited. Record them idempotently for manual review, but never
+            # debit balance or revoke service implicitly.
+            is_reversal = rollypay_status in {'refunded', 'chargeback'} or event_type in {
+                'payment.refunded',
+                'payment.chargeback',
+                'refund_request.completed',
+            }
+            if is_reversal:
+                payment.status = 'refunded' if rollypay_status == 'refunded' else 'chargeback'
+                payment.rollypay_payment_id = rollypay_payment_id or payment.rollypay_payment_id
+                payment.callback_payload = callback_payload
+                payment.updated_at = datetime.now(UTC)
+                await db.commit()
+                logger.warning(
+                    'RollyPay reversal recorded for manual review',
+                    order_id=payment.order_id,
+                    status=payment.status,
+                    transaction_id=payment.transaction_id,
+                )
+                return True
+
+            # Проверка дублирования (re-check from locked row)
+            if payment.is_paid:
+                logger.info('RollyPay webhook: платеж уже обработан', order_id=payment.order_id)
+                return True
 
             # Проверка суммы ДО обновления статуса
             if is_paid:
