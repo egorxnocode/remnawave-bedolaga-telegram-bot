@@ -153,6 +153,9 @@ async def checkout_lava_service(
         description = f'Покупка {devices} доп. устройств'
         snapshot = {'devices': devices, 'discount_percent': discount['percent'], 'days_left_snapshot': days_left}
 
+    if amount_kopeks <= 0:
+        raise HTTPException(status_code=400, detail='Zero-price checkout is not supported by Lava')
+
     recurrent = bool(request.recurrent and kind == 'tariff')
     if recurrent:
         if not settings.is_lava_recurrent_enabled() or tariff is None:
@@ -179,20 +182,24 @@ async def checkout_lava_service(
         tariff_id=tariff.id if tariff else None,
     )
 
+    # Every explicit tariff checkout replaces the previous provider billing
+    # choice. A one-time invoice must cancel the old recurrent agreement too,
+    # otherwise it could charge again after the manually paid period.
+    current = (
+        await get_current_recurrent_subscription(db, subscription_id=subscription.id, user_id=user.id)
+        if kind == 'tariff' and subscription
+        else None
+    )
+    if current:
+        try:
+            await cancel_recurrent_subscription(db, current)
+        except LavaAPIError as error:
+            order.status = 'failed'
+            order.failure_reason = 'Previous recurrent subscription could not be cancelled'
+            await db.commit()
+            raise HTTPException(status_code=502, detail=error.message) from error
+
     if recurrent:
-        current = (
-            await get_current_recurrent_subscription(db, subscription_id=subscription.id, user_id=user.id)
-            if subscription
-            else None
-        )
-        if current:
-            try:
-                await cancel_recurrent_subscription(db, current)
-            except LavaAPIError as error:
-                order.status = 'failed'
-                order.failure_reason = 'Previous recurrent subscription could not be cancelled'
-                await db.commit()
-                raise HTTPException(status_code=502, detail=error.message) from error
         email = str(request.email or user.email or '').strip()
         try:
             record, payment_url = await start_recurrent_subscription(

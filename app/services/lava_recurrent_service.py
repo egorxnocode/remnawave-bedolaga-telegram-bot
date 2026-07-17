@@ -23,7 +23,11 @@ from app.database.models import (
     Tariff,
     User,
 )
-from app.services.lava_order_service import create_recurrent_renewal_order, fulfill_lava_service_order
+from app.services.lava_order_service import (
+    create_recurrent_renewal_order,
+    emit_lava_service_order_side_effects,
+    fulfill_lava_service_order,
+)
 from app.services.lava_service import LavaAPIError, lava_service
 
 
@@ -313,6 +317,7 @@ async def process_lava_recurrent_callback(db: AsyncSession, payload: dict[str, A
             db,
             order_id=service_order.id,
             provider_invoice_id=invoice_id,
+            commit=False,
         )
         if not fulfilled or service_order is None:
             await db.rollback()
@@ -328,6 +333,7 @@ async def process_lava_recurrent_callback(db: AsyncSession, payload: dict[str, A
         event.outcome = 'service_order_fulfilled'
         event.processed_at = datetime.now(UTC)
         await db.commit()
+        await emit_lava_service_order_side_effects(db, service_order)
         return True
 
     if incoming_status == 'suspended':

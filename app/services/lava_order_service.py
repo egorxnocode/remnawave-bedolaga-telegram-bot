@@ -26,6 +26,7 @@ from app.database.models import (
     PaymentMethod,
     Subscription,
     Tariff,
+    Transaction,
     TransactionType,
     User,
 )
@@ -154,6 +155,7 @@ async def fulfill_lava_service_order(
     *,
     order_id: int,
     provider_invoice_id: str,
+    commit: bool = True,
 ) -> tuple[bool, LavaServiceOrder | None]:
     """Fulfil an order exactly once.
 
@@ -248,18 +250,31 @@ async def fulfill_lava_service_order(
         if recurrent is not None and subscription is not None:
             recurrent.subscription_id = subscription.id
 
-    await db.commit()
-    await emit_transaction_side_effects(
-        db,
-        transaction,
-        amount_kopeks=order.amount_kopeks,
-        user_id=order.user_id,
-        type=TransactionType.SUBSCRIPTION_PAYMENT,
-        payment_method=PaymentMethod.LAVA,
-        external_id=external_id,
-        description=order.description,
-    )
+    if not commit:
+        await db.flush()
+        return True, order
 
+    await db.commit()
+    await emit_lava_service_order_side_effects(db, order)
+    return True, order
+
+
+async def emit_lava_service_order_side_effects(db: AsyncSession, order: LavaServiceOrder) -> None:
+    """Emit notifications and enqueue panel sync after the database commit."""
+    transaction = await db.get(Transaction, order.transaction_id) if order.transaction_id else None
+    if transaction is not None:
+        await emit_transaction_side_effects(
+            db,
+            transaction,
+            amount_kopeks=order.amount_kopeks,
+            user_id=order.user_id,
+            type=TransactionType.SUBSCRIPTION_PAYMENT,
+            payment_method=PaymentMethod.LAVA,
+            external_id=transaction.external_id,
+            description=order.description,
+        )
+
+    subscription = await db.get(Subscription, order.subscription_id) if order.subscription_id else None
     if subscription is not None:
         try:
             from app.services.remnawave_retry_queue import remnawave_retry_queue
@@ -271,7 +286,6 @@ async def fulfill_lava_service_order(
             )
         except Exception as error:
             logger.error('Failed to enqueue RemnaWave sync for Lava order', order_id=order.id, error=error)
-    return True, order
 
 
 async def create_recurrent_renewal_order(

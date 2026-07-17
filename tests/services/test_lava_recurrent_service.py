@@ -70,10 +70,16 @@ async def test_activated_callback_fulfils_direct_service_order() -> None:
     db.flush = AsyncMock()
     db.add = MagicMock()
 
-    with patch(
-        'app.services.lava_recurrent_service.fulfill_lava_service_order',
-        AsyncMock(return_value=(True, service_order)),
-    ) as fulfill:
+    with (
+        patch(
+            'app.services.lava_recurrent_service.fulfill_lava_service_order',
+            AsyncMock(return_value=(True, service_order)),
+        ) as fulfill,
+        patch(
+            'app.services.lava_recurrent_service.emit_lava_service_order_side_effects',
+            AsyncMock(),
+        ) as side_effects,
+    ):
         assert await process_lava_recurrent_callback(db, _payload()) is True
 
     assert record.status == 'activated'
@@ -83,8 +89,10 @@ async def test_activated_callback_fulfils_direct_service_order() -> None:
         db,
         order_id=11,
         provider_invoice_id='lava-invoice-1',
+        commit=False,
     )
     db.commit.assert_awaited_once()
+    side_effects.assert_awaited_once_with(db, service_order)
 
 
 @pytest.mark.asyncio

@@ -47,6 +47,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(['transaction_id'], ['transactions.id'], ondelete='SET NULL'),
         sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
         sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('provider_invoice_id'),
         sa.UniqueConstraint('provider_order_id'),
         sa.UniqueConstraint('transaction_id'),
     )

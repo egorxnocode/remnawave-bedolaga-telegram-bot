@@ -168,7 +168,7 @@ class LavaServiceCheckoutRequest(BaseModel):
     tariff_id: int | None = Field(None, ge=1)
     period_days: int | None = Field(None, ge=1, le=3650)
     traffic_gb: int | None = Field(None, ge=1, le=100_000)
-    devices: int | None = Field(None, ge=1, le=100)
+    devices: int | None = Field(None, ge=1)
     recurrent: bool = True
     email: EmailStr | None = None
     accepted_terms: bool = False

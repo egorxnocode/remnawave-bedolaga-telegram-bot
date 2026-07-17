@@ -96,8 +96,7 @@ async def test_tariff_order_never_credits_internal_balance() -> None:
             'app.services.lava_order_service.create_transaction',
             AsyncMock(return_value=transaction),
         ) as create_transaction,
-        patch('app.services.lava_order_service.emit_transaction_side_effects', AsyncMock()),
-        patch('app.services.remnawave_retry_queue.remnawave_retry_queue.enqueue'),
+        patch('app.services.lava_order_service.emit_lava_service_order_side_effects', AsyncMock()) as side_effects,
     ):
         ok, returned = await fulfill_lava_service_order(
             db,
@@ -124,3 +123,4 @@ async def test_tariff_order_never_credits_internal_balance() -> None:
         external_id='lava-service:invoice-1',
         commit=False,
     )
+    side_effects.assert_awaited_once_with(db, order)

@@ -1592,7 +1592,7 @@ class LavaServiceOrder(Base):
     snapshot = Column(JSON, nullable=False)
 
     provider_order_id = Column(String(64), nullable=True, unique=True, index=True)
-    provider_invoice_id = Column(String(128), nullable=True, index=True)
+    provider_invoice_id = Column(String(128), nullable=True, unique=True, index=True)
     transaction_id = Column(Integer, ForeignKey('transactions.id', ondelete='SET NULL'), nullable=True, unique=True)
     failure_reason = Column(Text, nullable=True)
     paid_at = Column(AwareDateTime(), nullable=True)
