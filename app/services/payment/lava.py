@@ -52,10 +52,20 @@ class LavaPaymentMixin:
         language: str = 'ru',
         payment_method_type: str | None = None,
         return_url: str | None = None,
+        order_id: str | None = None,
+        metadata_extra: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Создаёт инвойс Lava."""
         if not settings.is_lava_enabled():
             logger.error('Lava не настроен')
+            return None
+
+        # Transitional safety: existing paid/pending balance invoices still
+        # finalize through the legacy callback branch, but no authenticated
+        # user may create a *new* Lava wallet top-up. New money must reference
+        # one immutable direct-service order.
+        if user_id is not None and not (metadata_extra or {}).get('service_order_id'):
+            logger.warning('Lava balance top-up creation is disabled; use a direct service order', user_id=user_id)
             return None
 
         if amount_kopeks < settings.LAVA_MIN_AMOUNT_KOPEKS:
@@ -83,7 +93,7 @@ class LavaPaymentMixin:
             tg_id = 'guest'
 
         # 32 hex char (128 бит) суффикс — order_id уникален даже при публичном tg_id
-        order_id = f'lava{tg_id}_{uuid.uuid4().hex}'
+        order_id = order_id or f'lava{tg_id}_{uuid.uuid4().hex}'
         amount_rubles = amount_kopeks / 100
         currency = settings.LAVA_CURRENCY
 
@@ -99,6 +109,8 @@ class LavaPaymentMixin:
             'payment_method_type': method_key,
             'email': email,
         }
+        if metadata_extra:
+            metadata.update(metadata_extra)
 
         try:
             hook_url = self._build_lava_hook_url()
@@ -354,6 +366,25 @@ class LavaPaymentMixin:
                 await db.flush()
                 return await self._finalize_lava_payment(db, payment, trigger='webhook')
 
+            metadata_now = dict(getattr(payment, 'metadata_json', {}) or {})
+            service_order_id = metadata_now.get('service_order_id')
+            if service_order_id and internal_status in {'cancelled', 'expired', 'failed', 'error'}:
+                from sqlalchemy import select
+
+                from app.database.models import LavaServiceOrder
+
+                service_order = (
+                    await db.execute(
+                        select(LavaServiceOrder)
+                        .where(LavaServiceOrder.id == int(service_order_id))
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if service_order and service_order.status not in {'fulfilled', 'failed', 'cancelled'}:
+                    service_order.status = 'cancelled' if internal_status == 'cancelled' else 'failed'
+                    service_order.failure_reason = f'Lava invoice status: {internal_status}'
+                    service_order.updated_at = datetime.now(UTC)
+
             payment = await lava_crud.update_lava_payment_status(
                 db=db,
                 payment=payment,
@@ -400,6 +431,28 @@ class LavaPaymentMixin:
             return True
 
         metadata = dict(getattr(payment, 'metadata_json', {}) or {})
+
+        service_order_id = metadata.get('service_order_id')
+        if service_order_id is not None:
+            from app.services.lava_order_service import fulfill_lava_service_order
+
+            invoice_id = str(payment.lava_invoice_id or payment.order_id)
+            fulfilled, service_order = await fulfill_lava_service_order(
+                db,
+                order_id=int(service_order_id),
+                provider_invoice_id=invoice_id,
+            )
+            if not fulfilled or service_order is None:
+                logger.error('Lava: не удалось исполнить заказ услуги', service_order_id=service_order_id)
+                return False
+            payment.transaction_id = service_order.transaction_id
+            await db.commit()
+            logger.info(
+                'Lava: заказ услуги исполнен без пополнения баланса',
+                order_id=payment.order_id,
+                service_order_id=service_order.id,
+            )
+            return True
 
         from app.services.payment.common import try_fulfill_guest_purchase
 

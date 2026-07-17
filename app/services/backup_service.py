@@ -1667,6 +1667,7 @@ class BackupService:
             'lava_recurrent_consumers',
             'lava_recurrent_subscriptions',
             'lava_recurrent_events',
+            'lava_service_orders',
             # --- Content/config ---
             'pinned_messages',
             'main_menu_buttons',

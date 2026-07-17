@@ -409,11 +409,7 @@ async def get_purchase_options(
                     .limit(1)
                 )
             ).scalar_one_or_none()
-            recurrent_checkout_eligible = bool(
-                settings.is_lava_recurrent_enabled()
-                and trial_subscription
-                and not user.has_had_paid_subscription
-            )
+            recurrent_checkout_eligible = settings.is_lava_recurrent_enabled()
 
             return {
                 'sales_mode': 'tariffs',
@@ -434,7 +430,7 @@ async def get_purchase_options(
                 'tariff_switch_upgrade_enabled': settings.TARIFF_SWITCH_UPGRADE_ENABLED,
                 'tariff_switch_downgrade_enabled': settings.TARIFF_SWITCH_DOWNGRADE_ENABLED,
                 'lava_recurrent_checkout_eligible': recurrent_checkout_eligible,
-                'lava_recurrent_trial_subscription_id': trial_subscription.id if recurrent_checkout_eligible else None,
+                'lava_recurrent_trial_subscription_id': trial_subscription.id if trial_subscription else None,
                 'lava_recurrent_email_required': not bool(user.email),
             }
 

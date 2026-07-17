@@ -160,6 +160,21 @@ class LavaRecurrentCheckoutRequest(BaseModel):
     accepted_terms: Literal[True] = Field(..., description='Explicit consent to recurrent charges')
 
 
+class LavaServiceCheckoutRequest(BaseModel):
+    """Direct payment for one concrete service; never a balance top-up."""
+
+    kind: Literal['tariff', 'daily', 'traffic', 'devices']
+    subscription_id: int | None = Field(None, ge=1)
+    tariff_id: int | None = Field(None, ge=1)
+    period_days: int | None = Field(None, ge=1, le=3650)
+    traffic_gb: int | None = Field(None, ge=1, le=100_000)
+    devices: int | None = Field(None, ge=1, le=100)
+    recurrent: bool = True
+    email: EmailStr | None = None
+    accepted_terms: bool = False
+    yandex_cid: str | None = Field(None, max_length=128, pattern=r'^[A-Za-z0-9._:-]{4,128}$')
+
+
 class TrialActivateRequest(BaseModel):
     """Optional body for POST /trial — used to forward the Yandex CID for the
     offline-conversion trial-add (and purchase, when TRIAL_PAYMENT_ENABLED)

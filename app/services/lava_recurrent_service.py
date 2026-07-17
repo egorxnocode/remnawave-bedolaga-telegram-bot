@@ -14,19 +14,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.crud.subscription import extend_subscription
-from app.database.crud.transaction import create_transaction, emit_transaction_side_effects
 from app.database.models import (
     LavaRecurrentConsumer,
     LavaRecurrentEvent,
     LavaRecurrentSubscription,
-    PaymentMethod,
+    LavaServiceOrder,
     Subscription,
     Tariff,
-    Transaction,
-    TransactionType,
     User,
 )
+from app.services.lava_order_service import create_recurrent_renewal_order, fulfill_lava_service_order
 from app.services.lava_service import LavaAPIError, lava_service
 
 
@@ -85,8 +82,9 @@ async def start_recurrent_subscription(
     db: AsyncSession,
     *,
     user: User,
-    subscription: Subscription,
+    subscription: Subscription | None,
     tariff: Tariff,
+    service_order: LavaServiceOrder,
     period_days: int,
     email: str,
     consent_ip: str | None = None,
@@ -94,17 +92,22 @@ async def start_recurrent_subscription(
 ) -> tuple[LavaRecurrentSubscription, str]:
     if not settings.is_lava_recurrent_enabled():
         raise ValueError('Lava recurrent payments are disabled')
-    locked_subscription = (
-        await db.execute(
-            select(Subscription)
-            .where(Subscription.id == subscription.id, Subscription.user_id == user.id)
-            .with_for_update()
-        )
-    ).scalar_one_or_none()
-    if locked_subscription is None:
-        raise ValueError('Subscription not found')
-    if locked_subscription.is_trial is not True or user.has_had_paid_subscription:
-        raise ValueError('Lava recurrent is available only for the first purchase after trial')
+    locked_subscription = None
+    if subscription is not None:
+        locked_subscription = (
+            await db.execute(
+                select(Subscription)
+                .where(Subscription.id == subscription.id, Subscription.user_id == user.id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if locked_subscription is None:
+            raise ValueError('Subscription not found')
+    else:
+        # Serialize fresh multi-tariff checkouts. Without this lock, a double
+        # click could create two provider subscriptions before either local
+        # binding became visible.
+        await db.execute(select(User).where(User.id == user.id).with_for_update())
     if tariff.is_daily:
         raise ValueError('Daily tariffs are not eligible for Lava recurrent')
     product_id = configured_product_id(tariff.name, period_days)
@@ -113,8 +116,25 @@ async def start_recurrent_subscription(
     amount_kopeks = tariff.get_price_for_period(period_days)
     if amount_kopeks is None or int(amount_kopeks) <= 0:
         raise ValueError('Tariff period is not available')
-    if await get_current_recurrent_subscription(db, subscription_id=subscription.id, user_id=user.id):
+    if locked_subscription and await get_current_recurrent_subscription(
+        db, subscription_id=locked_subscription.id, user_id=user.id
+    ):
         raise ValueError('Lava recurrent subscription already exists')
+    if locked_subscription is None:
+        fresh_binding = (
+            await db.execute(
+                select(LavaRecurrentSubscription)
+                .where(
+                    LavaRecurrentSubscription.user_id == user.id,
+                    LavaRecurrentSubscription.tariff_id == tariff.id,
+                    LavaRecurrentSubscription.subscription_id.is_(None),
+                    LavaRecurrentSubscription.status.in_(OPEN_STATUSES),
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if fresh_binding is not None:
+            raise ValueError('Lava recurrent checkout for this tariff is already pending')
     consumer = (
         await db.execute(select(LavaRecurrentConsumer).where(LavaRecurrentConsumer.user_id == user.id).limit(1))
     ).scalar_one_or_none()
@@ -161,7 +181,7 @@ async def start_recurrent_subscription(
 
     record = LavaRecurrentSubscription(
         user_id=user.id,
-        subscription_id=subscription.id,
+        subscription_id=locked_subscription.id if locked_subscription else None,
         tariff_id=tariff.id,
         product_id=product_id,
         consumer_id=consumer_id,
@@ -176,8 +196,13 @@ async def start_recurrent_subscription(
         consent_user_agent=consent_user_agent[:512] if consent_user_agent else None,
         status='created',
         is_active=False,
+        terms_snapshot=dict(service_order.snapshot or {}),
     )
     db.add(record)
+    await db.flush()
+    service_order.recurrent_subscription_id = record.id
+    service_order.provider_order_id = order_id
+    service_order.status = 'pending'
     await db.commit()
     await db.refresh(record)
     return record, str(payment_url)
@@ -268,101 +293,41 @@ async def process_lava_recurrent_callback(db: AsyncSession, payload: dict[str, A
             logger.error('Lava recurrent webhook: amount or invoice mismatch', order_id=order_id)
             return False
 
-        external_id = f'lava-recurrent:{invoice_id}'
-        is_first_payment = False
-        description = 'Рекуррентное продление тарифа через Lava'
-        transaction = (
+        initial_order = (
             await db.execute(
-                select(Transaction).where(
-                    Transaction.external_id == external_id,
-                    Transaction.payment_method == PaymentMethod.LAVA.value,
+                select(LavaServiceOrder)
+                .where(
+                    LavaServiceOrder.recurrent_subscription_id == record.id,
+                    LavaServiceOrder.status.in_({'created', 'pending', 'fulfilling'}),
                 )
+                .order_by(LavaServiceOrder.created_at.asc())
+                .limit(1)
             )
         ).scalar_one_or_none()
-        if transaction is None:
-            locked_user = (
-                await db.execute(select(User).where(User.id == record.user_id).with_for_update())
-            ).scalar_one()
-            subscription = (
-                await db.execute(
-                    select(Subscription).where(Subscription.id == record.subscription_id).with_for_update()
-                )
-            ).scalar_one_or_none()
-            tariff = await db.get(Tariff, record.tariff_id)
-            if subscription is None or tariff is None:
-                await db.rollback()
-                logger.error('Lava recurrent webhook: local subscription or tariff missing', order_id=order_id)
-                return False
-            is_first_payment = subscription.is_trial is True
-            if is_first_payment and locked_user.has_had_paid_subscription:
-                await db.rollback()
-                logger.error('Lava recurrent webhook: first purchase already consumed', order_id=order_id)
-                return False
-            squads = list(tariff.allowed_squads or [])
-            if not squads:
-                from app.database.crud.server_squad import get_all_server_squads
-
-                all_servers, _ = await get_all_server_squads(db, available_only=True)
-                squads = [server.squad_uuid for server in all_servers if server.squad_uuid]
-            await extend_subscription(
-                db,
-                subscription,
-                record.period_days,
-                tariff_id=tariff.id,
-                traffic_limit_gb=tariff.traffic_limit_gb,
-                device_limit=tariff.device_limit,
-                connected_squads=squads,
-                commit=False,
-            )
-            subscription.autopay_enabled = False
-            subscription.autopay_period_days = None
-            locked_user.has_had_paid_subscription = True
-            locked_user.updated_at = datetime.now(UTC)
-            description = (
-                f"Первая покупка тарифа '{tariff.name}' через Lava с рекуррентными платежами"
-                if is_first_payment
-                else f"Рекуррентное продление тарифа '{tariff.name}' через Lava"
-            )
-            transaction = await create_transaction(
-                db,
-                user_id=record.user_id,
-                type=TransactionType.SUBSCRIPTION_PAYMENT,
-                amount_kopeks=record.amount_kopeks,
-                description=description,
-                payment_method=PaymentMethod.LAVA,
-                external_id=external_id,
-                commit=False,
-            )
+        service_order = initial_order or await create_recurrent_renewal_order(
+            db, record, provider_invoice_id=invoice_id
+        )
+        service_order.provider_invoice_id = invoice_id
+        await db.flush()
+        fulfilled, service_order = await fulfill_lava_service_order(
+            db,
+            order_id=service_order.id,
+            provider_invoice_id=invoice_id,
+        )
+        if not fulfilled or service_order is None:
+            await db.rollback()
+            logger.error('Lava recurrent webhook: service order fulfillment failed', order_id=order_id)
+            return False
         record.status = 'activated'
         record.is_active = True
         record.last_invoice_id = invoice_id
         record.payer_details = str(payload.get('payer_details') or '') or None
         record.next_pay_at = _parse_datetime(payload.get('next_pay_time'))
         record.activated_at = _parse_datetime(payload.get('activation_time')) or datetime.now(UTC)
-        event.transaction_id = transaction.id
-        event.outcome = 'subscription_activated' if is_first_payment else 'subscription_extended'
+        event.transaction_id = service_order.transaction_id
+        event.outcome = 'service_order_fulfilled'
         event.processed_at = datetime.now(UTC)
         await db.commit()
-        await emit_transaction_side_effects(
-            db,
-            transaction,
-            amount_kopeks=record.amount_kopeks,
-            user_id=record.user_id,
-            type=TransactionType.SUBSCRIPTION_PAYMENT,
-            payment_method=PaymentMethod.LAVA,
-            external_id=external_id,
-            description=description,
-        )
-        try:
-            from app.services.remnawave_retry_queue import remnawave_retry_queue
-
-            remnawave_retry_queue.enqueue(
-                subscription_id=record.subscription_id,
-                user_id=record.user_id,
-                action='update',
-            )
-        except Exception as error:
-            logger.error('Failed to enqueue RemnaWave sync after Lava recurrent payment', error=error)
         return True
 
     if incoming_status == 'suspended':

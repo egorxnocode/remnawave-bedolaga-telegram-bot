@@ -1558,6 +1558,55 @@ class LavaPayment(Base):
         )
 
 
+class LavaServiceOrder(Base):
+    """Immutable order paid directly through Lava for one concrete service.
+
+    The order deliberately does not touch ``users.balance_kopeks``.  Its JSON
+    snapshot is the source of truth during a delayed/retried callback, so later
+    tariff price changes cannot alter an already issued invoice.
+    """
+
+    __tablename__ = 'lava_service_orders'
+    __table_args__ = (
+        Index('ix_lava_service_orders_user_status', 'user_id', 'status'),
+        Index('ix_lava_service_orders_target', 'subscription_id', 'kind'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    subscription_id = Column(Integer, ForeignKey('subscriptions.id', ondelete='SET NULL'), nullable=True, index=True)
+    tariff_id = Column(Integer, ForeignKey('tariffs.id', ondelete='SET NULL'), nullable=True, index=True)
+    recurrent_subscription_id = Column(
+        Integer,
+        ForeignKey('lava_recurrent_subscriptions.id', ondelete='SET NULL'),
+        nullable=True,
+        index=True,
+    )
+
+    kind = Column(String(32), nullable=False, index=True)
+    payment_mode = Column(String(16), nullable=False)
+    status = Column(String(24), nullable=False, default='created', index=True)
+    amount_kopeks = Column(Integer, nullable=False)
+    currency = Column(String(10), nullable=False, default='RUB')
+    description = Column(Text, nullable=False)
+    snapshot = Column(JSON, nullable=False)
+
+    provider_order_id = Column(String(64), nullable=True, unique=True, index=True)
+    provider_invoice_id = Column(String(128), nullable=True, index=True)
+    transaction_id = Column(Integer, ForeignKey('transactions.id', ondelete='SET NULL'), nullable=True, unique=True)
+    failure_reason = Column(Text, nullable=True)
+    paid_at = Column(AwareDateTime(), nullable=True)
+    fulfilled_at = Column(AwareDateTime(), nullable=True)
+    created_at = Column(AwareDateTime(), default=func.now(), nullable=False)
+    updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship('User', backref='lava_service_orders')
+    subscription = relationship('Subscription', foreign_keys=[subscription_id], backref='lava_service_orders')
+    tariff = relationship('Tariff', backref='lava_service_orders')
+    recurrent_subscription = relationship('LavaRecurrentSubscription', backref='service_orders')
+    transaction = relationship('Transaction', backref='lava_service_order')
+
+
 class LavaRecurrentConsumer(Base):
     """Стабильный subscriber Lava, переживающий повторные попытки подписки."""
 
@@ -1620,6 +1669,7 @@ class LavaRecurrentSubscription(Base):
     deactivated_at = Column(AwareDateTime(), nullable=True)
     deactivated_reason = Column(Text, nullable=True)
     callback_payload = Column(JSON, nullable=True)
+    terms_snapshot = Column(JSON, nullable=True)
 
     created_at = Column(AwareDateTime(), default=func.now(), nullable=False)
     updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now(), nullable=False)
