@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     SUPPORT_TICKET_SLA_CHECK_INTERVAL_SECONDS: int = 60
     SUPPORT_TICKET_SLA_REMINDER_COOLDOWN_MINUTES: int = 15
 
+    # AI support is fail-closed. Only an explicit environment change may move
+    # it to shadow/auto; the admin settings API does not expose this switch.
+    AI_SUPPORT_MODE: Literal['off', 'shadow', 'auto'] = 'off'
+
     # MiniApp tickets settings
     MINIAPP_TICKETS_ENABLED: bool = True  # Enable/disable tickets section in miniapp
     MINIAPP_SUPPORT_TYPE: str = 'tickets'  # one of: tickets, profile, url

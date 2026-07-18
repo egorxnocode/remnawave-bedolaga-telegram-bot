@@ -22,6 +22,8 @@ EXCLUDED_AUTH_KEYS = [
     'WEBHOOK_SECRET_TOKEN',
 ]
 
+EXCLUDED_SAFETY_KEYS = ['AI_SUPPORT_MODE']
+
 
 def test_identity_and_auth_secrets_are_excluded() -> None:
     for key in EXCLUDED_AUTH_KEYS:
@@ -32,5 +34,12 @@ def test_excluded_keys_have_no_editable_definition() -> None:
     # No definition -> admin_settings update_setting's get_definition() raises
     # KeyError -> 404, so a settings:edit admin cannot write these keys.
     for key in EXCLUDED_AUTH_KEYS:
+        with pytest.raises(KeyError):
+            BotConfigurationService.get_definition(key)
+
+
+def test_ai_support_mode_is_environment_only() -> None:
+    for key in EXCLUDED_SAFETY_KEYS:
+        assert key in BotConfigurationService.EXCLUDED_KEYS
         with pytest.raises(KeyError):
             BotConfigurationService.get_definition(key)

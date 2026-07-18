@@ -82,6 +82,7 @@ class BotConfigurationService:
         'WEB_API_DEFAULT_TOKEN',
         'WEB_API_TOKEN_HMAC_SECRET',
         'WEBHOOK_SECRET_TOKEN',
+        'AI_SUPPORT_MODE',
     }
 
     READ_ONLY_KEYS: set[str] = set()
