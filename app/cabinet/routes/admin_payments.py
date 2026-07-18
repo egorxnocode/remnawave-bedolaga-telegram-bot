@@ -6,10 +6,19 @@ from datetime import UTC, datetime, timedelta
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot_factory import create_bot
-from app.database.models import PaymentMethod, User
+from app.database.crud.transaction import create_transaction
+from app.database.models import (
+    LavaRefundRequest,
+    LavaServiceOrder,
+    PaymentMethod,
+    Subscription,
+    TransactionType,
+    User,
+)
 from app.services.payment_search_service import (
     MAX_ALL_TIME_DAYS,
     PeriodPreset,
@@ -61,6 +70,7 @@ class PendingPaymentResponse(BaseModel):
     user_username: str | None = None
     user_email: str | None = None
     decline_reason: str | None = None
+    service_order_id: int | None = None
 
     class Config:
         from_attributes = True
@@ -102,6 +112,37 @@ class SearchStatsResponse(BaseModel):
     paid: int
     cancelled: int
     by_method: dict
+
+
+class LavaRefundCreateRequest(BaseModel):
+    reason: str
+    revoke_service: bool = False
+
+
+class LavaRefundConfirmRequest(BaseModel):
+    money_returned: bool
+    provider_reference: str
+    admin_comment: str | None = None
+
+
+class LavaRefundResponse(BaseModel):
+    id: int
+    service_order_id: int
+    user_id: int
+    amount_kopeks: int
+    currency: str
+    status: str
+    reason: str
+    provider_reference: str | None
+    admin_comment: str | None
+    revoke_service: bool
+    service_revoked_at: datetime | None
+    refund_transaction_id: int | None
+    requested_at: datetime
+    completed_at: datetime | None
+
+    class Config:
+        from_attributes = True
 
 
 # ============ Helper functions ============
@@ -299,6 +340,12 @@ def _extract_decline_reason(record: PendingPayment) -> str | None:
 def _record_to_response(record: PendingPayment) -> PendingPaymentResponse:
     """Convert PendingPayment to API response."""
     status_emoji, status_text = _get_status_info(record)
+    metadata = dict(getattr(record.payment, 'metadata_json', None) or {})
+    service_order_id = metadata.get('service_order_id')
+    try:
+        service_order_id = int(service_order_id) if service_order_id is not None else None
+    except (TypeError, ValueError):
+        service_order_id = None
     return PendingPaymentResponse(
         id=record.local_id,
         method=record.method.value,
@@ -319,6 +366,7 @@ def _record_to_response(record: PendingPayment) -> PendingPaymentResponse:
         user_username=record.user.username if record.user else None,
         user_email=record.user.email if record.user else None,
         decline_reason=_extract_decline_reason(record),
+        service_order_id=service_order_id,
     )
 
 
@@ -515,6 +563,151 @@ async def search_payments_stats_endpoint(
         cancelled=stats.cancelled,
         by_method=stats.by_method or {},
     )
+
+
+@router.get('/lava-refunds', response_model=list[LavaRefundResponse])
+async def list_lava_refunds(
+    refund_status: str | None = Query(default=None),
+    admin: User = Depends(require_permission('payments:read')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    query = select(LavaRefundRequest).order_by(LavaRefundRequest.requested_at.desc()).limit(200)
+    if refund_status:
+        query = query.where(LavaRefundRequest.status == refund_status.strip().lower())
+    return list((await db.execute(query)).scalars().all())
+
+
+@router.post('/lava-orders/{order_id}/refunds', response_model=LavaRefundResponse)
+async def request_lava_refund(
+    order_id: int,
+    payload: LavaRefundCreateRequest,
+    admin: User = Depends(require_permission('payments:edit')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Create a manual provider-refund task without touching user balance."""
+    reason = payload.reason.strip()
+    if len(reason) < 5:
+        raise HTTPException(status_code=422, detail='Refund reason is required')
+    order = (
+        await db.execute(select(LavaServiceOrder).where(LavaServiceOrder.id == order_id).with_for_update())
+    ).scalar_one_or_none()
+    if order is None:
+        raise HTTPException(status_code=404, detail='Lava service order not found')
+    if order.status != 'fulfilled' or not order.transaction_id or not order.provider_invoice_id:
+        raise HTTPException(status_code=409, detail='Only a fulfilled provider-paid order can be refunded')
+    if payload.revoke_service and order.kind not in {'tariff', 'daily'}:
+        raise HTTPException(status_code=409, detail='Automatic revocation is unavailable for add-on refunds')
+    existing = (
+        await db.execute(
+            select(LavaRefundRequest).where(LavaRefundRequest.service_order_id == order.id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    refund = LavaRefundRequest(
+        service_order_id=order.id,
+        user_id=order.user_id,
+        amount_kopeks=order.amount_kopeks,
+        currency=order.currency,
+        status='manual_required',
+        reason=reason,
+        revoke_service=payload.revoke_service,
+        requested_by=admin.id,
+    )
+    db.add(refund)
+    await db.commit()
+    await db.refresh(refund)
+    logger.warning('Lava manual refund requested', refund_id=refund.id, order_id=order.id, admin_id=admin.id)
+    return refund
+
+
+@router.post('/lava-refunds/{refund_id}/confirm', response_model=LavaRefundResponse)
+async def confirm_lava_refund(
+    refund_id: int,
+    payload: LavaRefundConfirmRequest,
+    admin: User = Depends(require_permission('payments:edit')),
+    db: AsyncSession = Depends(get_cabinet_db),
+):
+    """Record completion only after the operator returned money in Lava."""
+    if not payload.money_returned:
+        raise HTTPException(status_code=422, detail='Confirm that money was returned in Lava first')
+    provider_reference = payload.provider_reference.strip()
+    if len(provider_reference) < 3:
+        raise HTTPException(status_code=422, detail='Provider refund reference is required')
+    refund = (
+        await db.execute(
+            select(LavaRefundRequest).where(LavaRefundRequest.id == refund_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if refund is None:
+        raise HTTPException(status_code=404, detail='Lava refund request not found')
+    if refund.status == 'completed':
+        return refund
+    if refund.status != 'manual_required':
+        raise HTTPException(status_code=409, detail='Refund request is not awaiting manual completion')
+    order = (
+        await db.execute(
+            select(LavaServiceOrder).where(LavaServiceOrder.id == refund.service_order_id).with_for_update()
+        )
+    ).scalar_one()
+    refund_transaction = await create_transaction(
+        db,
+        user_id=refund.user_id,
+        type=TransactionType.REFUND,
+        amount_kopeks=refund.amount_kopeks,
+        description=f'Возврат через Lava: заказ {order.id}',
+        payment_method=PaymentMethod.LAVA,
+        external_id=f'lava-refund:{refund.id}',
+        commit=False,
+    )
+    subscription = None
+    if refund.revoke_service and order.subscription_id:
+        subscription = (
+            await db.execute(
+                select(Subscription).where(Subscription.id == order.subscription_id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if subscription is not None:
+            subscription.status = 'disabled'
+            subscription.autopay_enabled = False
+            subscription.updated_at = datetime.now(UTC)
+            refund.service_revoked_at = datetime.now(UTC)
+    refund.status = 'completed'
+    refund.provider_reference = provider_reference
+    refund.admin_comment = (payload.admin_comment or '').strip() or None
+    refund.completed_by = admin.id
+    refund.refund_transaction_id = refund_transaction.id
+    refund.completed_at = datetime.now(UTC)
+    refund.updated_at = datetime.now(UTC)
+    await db.commit()
+    if subscription is not None:
+        try:
+            from app.services.remnawave_retry_queue import remnawave_retry_queue
+
+            remnawave_retry_queue.enqueue(
+                subscription_id=subscription.id,
+                user_id=refund.user_id,
+                action='update',
+            )
+        except Exception:
+            logger.exception('Failed to enqueue subscription revocation after Lava refund', refund_id=refund.id)
+    user = await db.get(User, refund.user_id)
+    if user is not None and user.telegram_id:
+        bot = create_bot()
+        try:
+            await bot.send_message(
+                user.telegram_id,
+                '✅ <b>Возврат выполнен</b>\n\n'
+                f'Сумма: <b>{refund.amount_kopeks / 100:.2f} ₽</b>\n'
+                'Деньги отправлены на исходный способ оплаты. Срок зачисления зависит от банка.',
+            )
+        except Exception:
+            logger.exception('Failed to notify user about Lava refund', refund_id=refund.id)
+        finally:
+            await bot.session.close()
+    await db.refresh(refund)
+    logger.warning('Lava manual refund completed', refund_id=refund.id, admin_id=admin.id)
+    return refund
 
 
 @router.get('/{method}/{payment_id}', response_model=PendingPaymentResponse)

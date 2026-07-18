@@ -918,6 +918,10 @@ class Settings(BaseSettings):
     LAVA_WEBHOOK_PATH: str = '/lava-webhook'
     LAVA_RETURN_URL: str | None = None
     LAVA_PAYMENT_LIFETIME_MINUTES: int = 60  # макс 7200 минут (5 дней)
+    LAVA_ORDER_RECONCILIATION_ENABLED: bool = True
+    LAVA_ORDER_RECONCILIATION_INTERVAL_SECONDS: int = 300
+    LAVA_ORDER_RECONCILIATION_BATCH_SIZE: int = 100
+    LAVA_ORDER_RECONCILIATION_ALERT_AFTER_ATTEMPTS: int = 3
     # Sub-методы Lava (фильтр через includeService/excludeService на стороне Lava)
     LAVA_CARD_ENABLED: bool = False
     LAVA_CARD_DISPLAY_NAME: str = 'Карта (Lava)'

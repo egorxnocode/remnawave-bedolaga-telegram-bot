@@ -1570,6 +1570,12 @@ class LavaServiceOrder(Base):
     __table_args__ = (
         Index('ix_lava_service_orders_user_status', 'user_id', 'status'),
         Index('ix_lava_service_orders_target', 'subscription_id', 'kind'),
+        Index(
+            'uq_lava_service_orders_open_dedup_key',
+            'dedup_key',
+            unique=True,
+            postgresql_where=text("status IN ('created','pending','fulfilling') AND dedup_key IS NOT NULL"),
+        ),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -1590,11 +1596,16 @@ class LavaServiceOrder(Base):
     currency = Column(String(10), nullable=False, default='RUB')
     description = Column(Text, nullable=False)
     snapshot = Column(JSON, nullable=False)
+    dedup_key = Column(String(64), nullable=True, index=True)
 
     provider_order_id = Column(String(64), nullable=True, unique=True, index=True)
     provider_invoice_id = Column(String(128), nullable=True, unique=True, index=True)
     transaction_id = Column(Integer, ForeignKey('transactions.id', ondelete='SET NULL'), nullable=True, unique=True)
     failure_reason = Column(Text, nullable=True)
+    reconciliation_attempts = Column(Integer, nullable=False, default=0)
+    last_reconciliation_at = Column(AwareDateTime(), nullable=True)
+    last_reconciliation_error = Column(Text, nullable=True)
+    reconciliation_alerted_at = Column(AwareDateTime(), nullable=True)
     paid_at = Column(AwareDateTime(), nullable=True)
     fulfilled_at = Column(AwareDateTime(), nullable=True)
     created_at = Column(AwareDateTime(), default=func.now(), nullable=False)
@@ -1605,6 +1616,50 @@ class LavaServiceOrder(Base):
     tariff = relationship('Tariff', backref='lava_service_orders')
     recurrent_subscription = relationship('LavaRecurrentSubscription', backref='service_orders')
     transaction = relationship('Transaction', backref='lava_service_order')
+
+
+class LavaRefundRequest(Base):
+    """Manual provider refund ledger for direct Lava service orders.
+
+    Lava's documented public Business API has no refund endpoint. A row is
+    therefore only completed after an administrator confirms that money was
+    actually returned in the provider cabinet; it never credits user balance.
+    """
+
+    __tablename__ = 'lava_refund_requests'
+
+    id = Column(Integer, primary_key=True, index=True)
+    service_order_id = Column(
+        Integer,
+        ForeignKey('lava_service_orders.id', ondelete='RESTRICT'),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='RESTRICT'), nullable=False, index=True)
+    amount_kopeks = Column(Integer, nullable=False)
+    currency = Column(String(10), nullable=False, default='RUB')
+    status = Column(String(32), nullable=False, default='manual_required', index=True)
+    reason = Column(Text, nullable=False)
+    provider_reference = Column(String(255), nullable=True)
+    admin_comment = Column(Text, nullable=True)
+    revoke_service = Column(Boolean, nullable=False, default=False)
+    service_revoked_at = Column(AwareDateTime(), nullable=True)
+    requested_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    completed_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    refund_transaction_id = Column(
+        Integer,
+        ForeignKey('transactions.id', ondelete='SET NULL'),
+        nullable=True,
+        unique=True,
+    )
+    requested_at = Column(AwareDateTime(), default=func.now(), nullable=False)
+    completed_at = Column(AwareDateTime(), nullable=True)
+    updated_at = Column(AwareDateTime(), default=func.now(), onupdate=func.now(), nullable=False)
+
+    service_order = relationship('LavaServiceOrder', backref='refund_request')
+    user = relationship('User', foreign_keys=[user_id], backref='lava_refund_requests')
+    refund_transaction = relationship('Transaction', backref='lava_refund_request')
 
 
 class LavaRecurrentConsumer(Base):

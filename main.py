@@ -23,6 +23,7 @@ from app.services.broadcast_service import broadcast_service
 from app.services.contest_rotation_service import contest_rotation_service
 from app.services.daily_subscription_service import daily_subscription_service
 from app.services.grace_period_service import grace_period_scheduler
+from app.services.lava_order_reconciliation_service import lava_order_reconciliation_service
 from app.services.lava_recurrent_service import lava_recurrent_cancellation_reconciler
 from app.services.log_rotation_service import log_rotation_service
 from app.services.maintenance_service import maintenance_service
@@ -178,6 +179,7 @@ async def main():
     daily_subscription_task = None
     grace_period_task = None
     lava_recurrent_cancellation_task = None
+    lava_order_reconciliation_task = None
     polling_task = None
     web_api_server = None
     telegram_webhook_enabled = False
@@ -464,6 +466,7 @@ async def main():
             logger.warning('Не удалось запустить чистку дублей подписок', error=e)
 
         payment_service = PaymentService(bot)
+        lava_order_reconciliation_service.set_payment_service(payment_service)
         auto_payment_verification_service.set_payment_service(payment_service)
 
         # Настройка сервиса очереди чеков NaloGO
@@ -655,6 +658,17 @@ async def main():
             else:
                 maintenance_task = None
                 stage.skip('Служба техработ уже активна')
+
+        async with timeline.stage(
+            'Сверка заказов Lava',
+            '🧾',
+            success_message='Сверка заказов Lava запущена',
+        ) as stage:
+            if lava_order_reconciliation_service.is_enabled():
+                lava_order_reconciliation_task = asyncio.create_task(lava_order_reconciliation_service.start())
+                stage.log(f'Интервал проверки: {lava_order_reconciliation_service.interval_seconds}с')
+            else:
+                stage.skip('Lava отключена или сверка заказов выключена')
 
         async with timeline.stage(
             'Сверка отключений Lava',
@@ -940,6 +954,15 @@ async def main():
             lava_recurrent_cancellation_task.cancel()
             try:
                 await lava_recurrent_cancellation_task
+            except asyncio.CancelledError:
+                pass
+
+        if lava_order_reconciliation_task and not lava_order_reconciliation_task.done():
+            logger.info('ℹ️ Остановка сверки заказов Lava...')
+            lava_order_reconciliation_service.stop()
+            lava_order_reconciliation_task.cancel()
+            try:
+                await lava_order_reconciliation_task
             except asyncio.CancelledError:
                 pass
 

@@ -13,7 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database.crud.user import get_user_by_email
 from app.database.models import Subscription, Tariff, User
-from app.services.lava_order_service import attach_provider_payment, create_service_order
+from app.services.lava_order_service import (
+    attach_provider_payment,
+    create_service_order,
+    get_service_order_payment_url,
+)
 from app.services.lava_recurrent_service import (
     cancel_recurrent_subscription,
     configured_product_id,
@@ -171,7 +175,7 @@ async def checkout_lava_service(
     if recurrent and not str(request.email or user.email or '').strip():
         raise HTTPException(status_code=422, detail='Email is required')
 
-    order = await create_service_order(
+    order, order_created = await create_service_order(
         db,
         user_id=user.id,
         kind=kind,
@@ -182,6 +186,33 @@ async def checkout_lava_service(
         subscription_id=subscription.id if subscription else None,
         tariff_id=tariff.id if tariff else None,
     )
+    if not order_created:
+        existing_url = await get_service_order_payment_url(db, order)
+        if existing_url:
+            return {
+                'order_id': order.id,
+                'payment_mode': order.payment_mode,
+                'payment_url': existing_url,
+                'recurrent_id': order.recurrent_subscription_id,
+                'reused': True,
+            }
+        if order.status in {'created', 'pending', 'fulfilling'}:
+            raise HTTPException(status_code=409, detail='Payment checkout is already being prepared')
+        # The local invoice expired while checking it. Its terminal status has
+        # released the partial unique key, so create one fresh order.
+        order, order_created = await create_service_order(
+            db,
+            user_id=user.id,
+            kind=kind,
+            payment_mode='recurrent' if recurrent else 'one_time',
+            amount_kopeks=amount_kopeks,
+            description=description,
+            snapshot=snapshot,
+            subscription_id=subscription.id if subscription else None,
+            tariff_id=tariff.id if tariff else None,
+        )
+        if not order_created:
+            raise HTTPException(status_code=409, detail='Payment checkout is already being prepared')
 
     # Every explicit tariff checkout replaces the previous provider billing
     # choice. A one-time invoice must cancel the old recurrent agreement too,

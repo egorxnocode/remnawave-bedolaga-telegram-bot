@@ -398,6 +398,22 @@ class LavaPaymentMixin:
             logger.exception('Lava webhook: ошибка обработки', error=e)
             return False
 
+    async def reconcile_paid_lava_payment(self, db: AsyncSession, payment_id: int) -> bool:
+        """Retry local fulfilment for a provider-paid direct order.
+
+        Unlike ``process_lava_callback`` this deliberately does not return
+        early for ``is_paid`` rows. It is the recovery path for a crash after
+        persisting provider success but before the service transaction was
+        committed.
+        """
+        lava_crud = import_module('app.database.crud.lava')
+        payment = await lava_crud.get_lava_payment_by_id_for_update(db, payment_id)
+        if payment is None or not payment.is_paid:
+            return False
+        if payment.transaction_id:
+            return True
+        return await self._finalize_lava_payment(db, payment, trigger='reconciliation')
+
     async def process_lava_recurrent_callback(
         self,
         db: AsyncSession,

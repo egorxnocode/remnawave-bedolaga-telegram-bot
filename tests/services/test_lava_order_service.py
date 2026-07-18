@@ -6,12 +6,33 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.database.models import PaymentMethod, TransactionType
-from app.services.lava_order_service import fulfill_lava_service_order
+from app.services.lava_order_service import build_service_order_dedup_key, fulfill_lava_service_order
 from app.services.payment.lava import LavaPaymentMixin
 
 
 def _result(value):
     return SimpleNamespace(scalar_one_or_none=lambda: value)
+
+
+def test_service_order_dedup_key_is_stable_and_scoped() -> None:
+    values = {
+        'user_id': 42,
+        'kind': 'tariff',
+        'payment_mode': 'one_time',
+        'amount_kopeks': 27900,
+        'snapshot': {'period_days': 30, 'connected_squads': ['ultra']},
+        'subscription_id': None,
+        'tariff_id': 1,
+    }
+    first = build_service_order_dedup_key(**values)
+    reordered = build_service_order_dedup_key(
+        **{**values, 'snapshot': {'connected_squads': ['ultra'], 'period_days': 30}}
+    )
+    another_user = build_service_order_dedup_key(**{**values, 'user_id': 43})
+
+    assert first == reordered
+    assert first != another_user
+    assert len(first) == 64
 
 
 @pytest.mark.asyncio

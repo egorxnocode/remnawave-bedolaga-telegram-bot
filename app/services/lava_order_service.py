@@ -7,11 +7,14 @@ writes ``User.balance_kopeks``.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.crud.subscription import (
@@ -34,6 +37,30 @@ from app.database.models import (
 
 logger = structlog.get_logger(__name__)
 ORDER_KINDS = {'tariff', 'daily', 'traffic', 'devices'}
+OPEN_ORDER_STATUSES = {'created', 'pending', 'fulfilling'}
+
+
+def build_service_order_dedup_key(
+    *,
+    user_id: int,
+    kind: str,
+    payment_mode: str,
+    amount_kopeks: int,
+    snapshot: dict[str, Any],
+    subscription_id: int | None,
+    tariff_id: int | None,
+) -> str:
+    payload = {
+        'user_id': int(user_id),
+        'kind': kind,
+        'payment_mode': payment_mode,
+        'amount_kopeks': int(amount_kopeks),
+        'snapshot': snapshot,
+        'subscription_id': subscription_id,
+        'tariff_id': tariff_id,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
 
 async def create_service_order(
@@ -47,13 +74,33 @@ async def create_service_order(
     snapshot: dict[str, Any],
     subscription_id: int | None = None,
     tariff_id: int | None = None,
-) -> LavaServiceOrder:
+) -> tuple[LavaServiceOrder, bool]:
     if kind not in ORDER_KINDS:
         raise ValueError('Unsupported Lava service order kind')
     if payment_mode not in {'one_time', 'recurrent'}:
         raise ValueError('Unsupported Lava payment mode')
     if amount_kopeks <= 0:
         raise ValueError('Lava service order amount must be positive')
+    dedup_key = build_service_order_dedup_key(
+        user_id=user_id,
+        kind=kind,
+        payment_mode=payment_mode,
+        amount_kopeks=amount_kopeks,
+        snapshot=snapshot,
+        subscription_id=subscription_id,
+        tariff_id=tariff_id,
+    )
+    existing = (
+        await db.execute(
+            select(LavaServiceOrder).where(
+                LavaServiceOrder.dedup_key == dedup_key,
+                LavaServiceOrder.status.in_(OPEN_ORDER_STATUSES),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing, False
+
     order = LavaServiceOrder(
         user_id=user_id,
         subscription_id=subscription_id,
@@ -65,11 +112,56 @@ async def create_service_order(
         currency='RUB',
         description=description,
         snapshot=dict(snapshot),
+        dedup_key=dedup_key,
     )
     db.add(order)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # The partial unique index closes the double-click race between two
+        # simultaneous Cabinet requests. Return the winner's open order.
+        await db.rollback()
+        existing = (
+            await db.execute(
+                select(LavaServiceOrder).where(
+                    LavaServiceOrder.dedup_key == dedup_key,
+                    LavaServiceOrder.status.in_(OPEN_ORDER_STATUSES),
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            raise
+        return existing, False
     await db.refresh(order)
-    return order
+    return order, True
+
+
+async def get_service_order_payment_url(db: AsyncSession, order: LavaServiceOrder) -> str | None:
+    """Return a still-payable provider URL for a reusable open order."""
+    if order.payment_mode == 'recurrent' and order.recurrent_subscription_id:
+        record = await db.get(LavaRecurrentSubscription, order.recurrent_subscription_id)
+        if record is not None and record.status == 'created' and record.payment_url:
+            return str(record.payment_url)
+        return None
+
+    if order.payment_mode != 'one_time' or not order.provider_order_id:
+        return None
+    from app.database.models import LavaPayment
+
+    payment = (
+        await db.execute(select(LavaPayment).where(LavaPayment.order_id == order.provider_order_id))
+    ).scalar_one_or_none()
+    if payment is None or payment.is_paid or payment.status not in {'created', 'pending', 'processing'}:
+        return None
+    if payment.expires_at and payment.expires_at <= datetime.now(UTC):
+        payment.status = 'expired'
+        payment.updated_at = datetime.now(UTC)
+        order.status = 'failed'
+        order.failure_reason = 'Lava invoice expired before checkout retry'
+        order.updated_at = datetime.now(UTC)
+        await db.commit()
+        return None
+    return str(payment.payment_url) if payment.payment_url else None
 
 
 async def attach_provider_payment(
