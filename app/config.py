@@ -61,6 +61,14 @@ class Settings(BaseSettings):
         max_length=64,
         pattern=r'^[a-z0-9][a-z0-9._-]*$',
     )
+    AI_SUPPORT_ANTHROPIC_API_KEY: str = Field(default='', repr=False)
+    AI_SUPPORT_MODEL_ID: str = Field(default='claude-haiku-4-5-20251001', pattern=r'^claude-[a-z0-9-]+$')
+    AI_SUPPORT_PROVIDER_TIMEOUT_SECONDS: float = Field(default=15.0, ge=1.0, le=30.0)
+    AI_SUPPORT_PROVIDER_MAX_CONCURRENCY: int = Field(default=2, ge=1, le=10)
+    AI_SUPPORT_PROVIDER_MAX_TOKENS: int = Field(default=800, ge=128, le=2000)
+    AI_SUPPORT_PROVIDER_MAX_RETRIES: int = Field(default=2, ge=0, le=3)
+    AI_SUPPORT_PROVIDER_CIRCUIT_FAILURES: int = Field(default=5, ge=1, le=20)
+    AI_SUPPORT_PROVIDER_CIRCUIT_RESET_SECONDS: float = Field(default=60.0, ge=5.0, le=600.0)
 
     # MiniApp tickets settings
     MINIAPP_TICKETS_ENABLED: bool = True  # Enable/disable tickets section in miniapp
