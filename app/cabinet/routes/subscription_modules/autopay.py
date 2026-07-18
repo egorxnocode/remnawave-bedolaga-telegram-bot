@@ -65,6 +65,19 @@ async def update_autopay(
                 detail='Autopay is not available for daily subscriptions',
             )
 
+        from app.services.lava_recurrent_service import get_current_recurrent_subscription
+
+        lava_recurrent = await get_current_recurrent_subscription(
+            db,
+            subscription_id=subscription.id,
+            user_id=user.id,
+        )
+        if lava_recurrent is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail='Balance autopay cannot be enabled while Lava automatic payment exists',
+            )
+
     subscription.autopay_enabled = request.enabled
 
     if request.days_before is not None:

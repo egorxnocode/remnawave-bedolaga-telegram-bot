@@ -23,6 +23,7 @@ from app.services.broadcast_service import broadcast_service
 from app.services.contest_rotation_service import contest_rotation_service
 from app.services.daily_subscription_service import daily_subscription_service
 from app.services.grace_period_service import grace_period_scheduler
+from app.services.lava_recurrent_service import lava_recurrent_cancellation_reconciler
 from app.services.log_rotation_service import log_rotation_service
 from app.services.maintenance_service import maintenance_service
 from app.services.monitoring_service import monitoring_service
@@ -176,6 +177,7 @@ async def main():
     traffic_monitoring_task = None
     daily_subscription_task = None
     grace_period_task = None
+    lava_recurrent_cancellation_task = None
     polling_task = None
     web_api_server = None
     telegram_webhook_enabled = False
@@ -655,6 +657,17 @@ async def main():
                 stage.skip('Служба техработ уже активна')
 
         async with timeline.stage(
+            'Сверка отключений Lava',
+            '💳',
+            success_message='Сверка отключений Lava запущена',
+        ) as stage:
+            if settings.is_lava_recurrent_enabled():
+                lava_recurrent_cancellation_task = asyncio.create_task(lava_recurrent_cancellation_reconciler.start())
+                stage.log(f'Интервал проверки: {lava_recurrent_cancellation_reconciler.interval_seconds}с')
+            else:
+                stage.skip('Рекуррентные платежи Lava отключены')
+
+        async with timeline.stage(
             'Мониторинг трафика',
             '📊',
             success_message='Мониторинг трафика запущен',
@@ -918,6 +931,15 @@ async def main():
             grace_period_task.cancel()
             try:
                 await grace_period_task
+            except asyncio.CancelledError:
+                pass
+
+        if lava_recurrent_cancellation_task and not lava_recurrent_cancellation_task.done():
+            logger.info('ℹ️ Остановка сверки отключений Lava...')
+            lava_recurrent_cancellation_reconciler.stop()
+            lava_recurrent_cancellation_task.cancel()
+            try:
+                await lava_recurrent_cancellation_task
             except asyncio.CancelledError:
                 pass
 

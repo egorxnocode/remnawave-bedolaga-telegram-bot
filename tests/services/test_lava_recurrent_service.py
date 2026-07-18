@@ -7,9 +7,11 @@ import pytest
 
 from app.services.lava_recurrent_service import (
     _event_key,
+    cancel_recurrent_subscription,
     process_lava_recurrent_callback,
     start_recurrent_subscription,
 )
+from app.services.lava_service import LavaAPIError
 
 
 def _result(value):
@@ -213,3 +215,177 @@ async def test_setup_is_allowed_for_an_existing_paid_subscription(monkeypatch: p
     assert payment_url == 'https://pay'
     assert service_order.provider_order_id == record.order_id
     assert service_order.status == 'pending'
+
+
+@pytest.mark.asyncio
+async def test_cancel_recurrent_persists_request_before_provider_failure() -> None:
+    record = SimpleNamespace(
+        id=7,
+        status='activated',
+        is_active=True,
+        updated_at=None,
+        lava_subscription_id='provider-sub',
+        order_id='merchant-order',
+    )
+    db = MagicMock()
+    db.commit = AsyncMock()
+
+    with (
+        patch(
+            'app.services.lava_recurrent_service.lava_service.unsubscribe_recurrent_subscription',
+            AsyncMock(side_effect=LavaAPIError(503, 'Unavailable')),
+        ),
+        patch(
+            'app.services.lava_recurrent_service.lava_service.get_recurrent_subscription_status',
+            AsyncMock(return_value={'data': {'status': 'activated'}}),
+        ),
+    ):
+        with pytest.raises(LavaAPIError):
+            await cancel_recurrent_subscription(db, record)
+
+    assert record.status == 'cancel_requested'
+    assert record.is_active is False
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cancel_recurrent_confirms_and_closes_unpaid_order() -> None:
+    record = SimpleNamespace(
+        id=7,
+        status='created',
+        is_active=False,
+        updated_at=None,
+        deactivated_at=None,
+        lava_subscription_id='provider-sub',
+        order_id='merchant-order',
+    )
+    unpaid_order = SimpleNamespace(status='pending', failure_reason=None, updated_at=None)
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=_result(unpaid_order))
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
+
+    with patch(
+        'app.services.lava_recurrent_service.lava_service.unsubscribe_recurrent_subscription',
+        AsyncMock(return_value={'data': {'unsubscribed': True}}),
+    ):
+        result = await cancel_recurrent_subscription(db, record)
+
+    assert result.status == 'deactivated'
+    assert unpaid_order.status == 'cancelled'
+    assert unpaid_order.failure_reason == 'Recurrent checkout deactivated before payment'
+    assert db.commit.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_cancel_recurrent_accepts_deactivated_provider_status_after_lost_response() -> None:
+    record = SimpleNamespace(
+        id=7,
+        status='activated',
+        is_active=True,
+        updated_at=None,
+        deactivated_at=None,
+        lava_subscription_id='provider-sub',
+        order_id='merchant-order',
+    )
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=_result(None))
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
+
+    with (
+        patch(
+            'app.services.lava_recurrent_service.lava_service.unsubscribe_recurrent_subscription',
+            AsyncMock(side_effect=LavaAPIError(503, 'Response lost')),
+        ),
+        patch(
+            'app.services.lava_recurrent_service.lava_service.get_recurrent_subscription_status',
+            AsyncMock(return_value={'data': {'status': 'deactivated'}}),
+        ),
+    ):
+        result = await cancel_recurrent_subscription(db, record)
+
+    assert result.status == 'deactivated'
+    assert result.is_active is False
+    assert db.commit.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_suspended_callback_does_not_restore_cancel_requested_subscription() -> None:
+    record = SimpleNamespace(
+        id=7,
+        order_id='lavarec42_order',
+        lava_subscription_id='lava-sub-1',
+        product_id='lava-product-1',
+        consumer_id='bedolaga-user-42',
+        status='cancel_requested',
+        is_active=False,
+        deactivated_at=None,
+        callback_payload=None,
+        updated_at=None,
+        last_invoice_id=None,
+        next_pay_at=None,
+        suspended_at=None,
+    )
+    db = MagicMock()
+    db.execute = AsyncMock(side_effect=[_result(record), _result(None), _result(None)])
+    db.add = MagicMock()
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
+
+    with (
+        patch(
+            'app.services.lava_recurrent_service.lava_service.unsubscribe_recurrent_subscription',
+            AsyncMock(return_value={'data': {'unsubscribed': True}}),
+        ) as unsubscribe,
+    ):
+        assert (
+            await process_lava_recurrent_callback(
+                db,
+                _payload(status='suspended', suspension_time='2026-07-18T12:00:00Z'),
+            )
+            is True
+        )
+
+    assert record.status == 'deactivated'
+    assert record.is_active is False
+    unsubscribe.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_deactivated_callback_closes_unpaid_initial_order() -> None:
+    record = SimpleNamespace(
+        id=7,
+        order_id='lavarec42_order',
+        lava_subscription_id='lava-sub-1',
+        product_id='lava-product-1',
+        consumer_id='bedolaga-user-42',
+        status='created',
+        is_active=False,
+        callback_payload=None,
+        updated_at=None,
+        deactivated_at=None,
+        deactivated_reason=None,
+    )
+    unpaid_order = SimpleNamespace(status='pending', failure_reason=None, updated_at=None)
+    db = MagicMock()
+    db.execute = AsyncMock(side_effect=[_result(record), _result(None), _result(unpaid_order)])
+    db.add = MagicMock()
+    db.commit = AsyncMock()
+
+    assert (
+        await process_lava_recurrent_callback(
+            db,
+            _payload(
+                status='deactivated',
+                deactivation_time='2026-07-18T12:00:00Z',
+                deactivated_reason='Deactivation via API',
+            ),
+        )
+        is True
+    )
+
+    assert record.status == 'deactivated'
+    assert record.is_active is False
+    assert unpaid_order.status == 'cancelled'
+    assert unpaid_order.failure_reason == 'Recurrent checkout deactivated before payment'

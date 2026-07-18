@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime
@@ -14,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database.database import AsyncSessionLocal
 from app.database.models import (
     LavaRecurrentConsumer,
     LavaRecurrentEvent,
@@ -216,14 +218,74 @@ async def cancel_recurrent_subscription(
     db: AsyncSession,
     record: LavaRecurrentSubscription,
 ) -> LavaRecurrentSubscription:
-    response = await lava_service.unsubscribe_recurrent_subscription(
-        subscription_id=record.lava_subscription_id,
-        order_id=None if record.lava_subscription_id else record.order_id,
-    )
-    data = response.get('data') or response
-    record.status = 'deactivated' if data.get('unsubscribed') is True else 'cancel_requested'
+    if record.status == 'deactivated':
+        return record
+    record.status = 'cancel_requested'
+    record.is_active = False
+    record.updated_at = datetime.now(UTC)
+    await db.commit()
+    return await confirm_recurrent_cancellation(db, record)
+
+
+async def _cancel_unpaid_recurrent_order(
+    db: AsyncSession,
+    recurrent_id: int,
+) -> None:
+    unpaid_order = (
+        await db.execute(
+            select(LavaServiceOrder)
+            .where(
+                LavaServiceOrder.recurrent_subscription_id == recurrent_id,
+                LavaServiceOrder.status.in_({'created', 'pending'}),
+                LavaServiceOrder.paid_at.is_(None),
+            )
+            .with_for_update()
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if unpaid_order is not None:
+        unpaid_order.status = 'cancelled'
+        unpaid_order.failure_reason = 'Recurrent checkout deactivated before payment'
+        unpaid_order.updated_at = datetime.now(UTC)
+
+
+async def confirm_recurrent_cancellation(
+    db: AsyncSession,
+    record: LavaRecurrentSubscription,
+) -> LavaRecurrentSubscription:
+    """Confirm a persisted user cancellation with Lava.
+
+    The caller must leave ``cancel_requested`` in place on provider errors so
+    the background reconciler can retry without losing the user's instruction.
+    """
+    identifier = {
+        'subscription_id': record.lava_subscription_id,
+        'order_id': None if record.lava_subscription_id else record.order_id,
+    }
+    unsubscribe_error: LavaAPIError | None = None
+    try:
+        response = await lava_service.unsubscribe_recurrent_subscription(**identifier)
+        data = response.get('data') or response
+        confirmed = data.get('unsubscribed') is True
+    except LavaAPIError as error:
+        # The provider may already have applied the operation while its HTTP
+        # response was lost. Status is the authoritative fallback.
+        unsubscribe_error = error
+        confirmed = False
+
+    if not confirmed:
+        status_response = await lava_service.get_recurrent_subscription_status(**identifier)
+        status_data = status_response.get('data') or status_response
+        provider_status = str(status_data.get('status') or status_data.get('subscriptionStatus') or '').strip().lower()
+        confirmed = provider_status == 'deactivated'
+        if not confirmed and unsubscribe_error is not None:
+            raise unsubscribe_error
+
+    record.status = 'deactivated' if confirmed else 'cancel_requested'
     record.is_active = False
     record.deactivated_at = datetime.now(UTC) if record.status == 'deactivated' else None
+    if record.status == 'deactivated':
+        await _cancel_unpaid_recurrent_order(db, record.id)
     await db.commit()
     await db.refresh(record)
     return record
@@ -248,6 +310,7 @@ async def process_lava_recurrent_callback(db: AsyncSession, payload: dict[str, A
     if not record:
         logger.warning('Lava recurrent webhook: subscription not found', order_id=order_id)
         return False
+    cancellation_pending = getattr(record, 'status', 'created') in {'cancel_requested', 'deactivated'}
     if str(payload.get('product_id') or '') != record.product_id:
         logger.error('Lava recurrent webhook: product mismatch', order_id=order_id)
         return False
@@ -302,7 +365,7 @@ async def process_lava_recurrent_callback(db: AsyncSession, payload: dict[str, A
                 select(LavaServiceOrder)
                 .where(
                     LavaServiceOrder.recurrent_subscription_id == record.id,
-                    LavaServiceOrder.status.in_({'created', 'pending', 'fulfilling'}),
+                    LavaServiceOrder.status.in_({'created', 'pending', 'fulfilling', 'cancelled'}),
                 )
                 .order_by(LavaServiceOrder.created_at.asc())
                 .limit(1)
@@ -311,6 +374,11 @@ async def process_lava_recurrent_callback(db: AsyncSession, payload: dict[str, A
         service_order = initial_order or await create_recurrent_renewal_order(
             db, record, provider_invoice_id=invoice_id
         )
+        if getattr(service_order, 'status', 'pending') == 'cancelled':
+            # A signed provider callback proves that the initial payment won
+            # the race with cancellation. Fulfil the paid period exactly once,
+            # but keep future charges scheduled for deactivation below.
+            service_order.status = 'pending'
         service_order.provider_invoice_id = invoice_id
         await db.flush()
         fulfilled, service_order = await fulfill_lava_service_order(
@@ -323,8 +391,8 @@ async def process_lava_recurrent_callback(db: AsyncSession, payload: dict[str, A
             await db.rollback()
             logger.error('Lava recurrent webhook: service order fulfillment failed', order_id=order_id)
             return False
-        record.status = 'activated'
-        record.is_active = True
+        record.status = 'cancel_requested' if cancellation_pending else 'activated'
+        record.is_active = not cancellation_pending
         record.last_invoice_id = invoice_id
         record.payer_details = str(payload.get('payer_details') or '') or None
         record.next_pay_at = _parse_datetime(payload.get('next_pay_time'))
@@ -334,21 +402,99 @@ async def process_lava_recurrent_callback(db: AsyncSession, payload: dict[str, A
         event.processed_at = datetime.now(UTC)
         await db.commit()
         await emit_lava_service_order_side_effects(db, service_order)
+        if cancellation_pending:
+            try:
+                await confirm_recurrent_cancellation(db, record)
+            except LavaAPIError as error:
+                logger.warning(
+                    'Lava recurrent cancellation remains pending after paid callback',
+                    recurrent_id=record.id,
+                    error=error.message,
+                )
         return True
 
+    retry_cancellation = False
     if incoming_status == 'suspended':
-        record.status = 'suspended'
-        record.is_active = True
+        record.status = 'cancel_requested' if cancellation_pending else 'suspended'
+        record.is_active = not cancellation_pending
         record.last_invoice_id = str(payload.get('invoice_id') or '') or record.last_invoice_id
         record.next_pay_at = _parse_datetime(payload.get('next_pay_time'))
         record.suspended_at = _parse_datetime(payload.get('suspension_time')) or datetime.now(UTC)
-        event.outcome = 'suspended'
+        event.outcome = 'suspended_cancellation_pending' if cancellation_pending else 'suspended'
+        retry_cancellation = cancellation_pending
     else:
         record.status = 'deactivated'
         record.is_active = False
         record.deactivated_at = _parse_datetime(payload.get('deactivation_time')) or datetime.now(UTC)
         record.deactivated_reason = str(payload.get('deactivated_reason') or '') or None
         event.outcome = 'deactivated'
+        await _cancel_unpaid_recurrent_order(db, record.id)
     event.processed_at = datetime.now(UTC)
     await db.commit()
+    if retry_cancellation:
+        try:
+            await confirm_recurrent_cancellation(db, record)
+        except LavaAPIError as error:
+            logger.warning(
+                'Lava recurrent cancellation remains pending after suspended callback',
+                recurrent_id=record.id,
+                error=error.message,
+            )
     return True
+
+
+class LavaRecurrentCancellationReconciler:
+    """Retry user-requested provider cancellations until Lava confirms them."""
+
+    def __init__(self, interval_seconds: int = 300) -> None:
+        self.interval_seconds = interval_seconds
+        self._running = False
+
+    async def reconcile_once(self) -> int:
+        confirmed = 0
+        async with AsyncSessionLocal() as db:
+            record_ids = (
+                (
+                    await db.execute(
+                        select(LavaRecurrentSubscription.id)
+                        .where(LavaRecurrentSubscription.status == 'cancel_requested')
+                        .order_by(LavaRecurrentSubscription.updated_at.asc())
+                        .limit(100)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for record_id in record_ids:
+                record = await db.get(LavaRecurrentSubscription, record_id)
+                if record is None or record.status != 'cancel_requested':
+                    continue
+                try:
+                    updated = await confirm_recurrent_cancellation(db, record)
+                    confirmed += int(updated.status == 'deactivated')
+                except LavaAPIError as error:
+                    await db.rollback()
+                    logger.warning(
+                        'Lava recurrent cancellation retry failed',
+                        recurrent_id=record_id,
+                        error=error.message,
+                    )
+        return confirmed
+
+    async def start(self) -> None:
+        self._running = True
+        logger.info('Lava recurrent cancellation reconciler started', interval_seconds=self.interval_seconds)
+        while self._running:
+            try:
+                await self.reconcile_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.exception('Lava recurrent cancellation reconciliation failed', error=str(error))
+            await asyncio.sleep(self.interval_seconds)
+
+    def stop(self) -> None:
+        self._running = False
+
+
+lava_recurrent_cancellation_reconciler = LavaRecurrentCancellationReconciler()
