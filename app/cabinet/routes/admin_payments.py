@@ -245,6 +245,24 @@ def _get_status_info(record: PendingPayment) -> tuple[str, str]:
         }
         return mapping.get(status_str, ('❓', 'Неизвестно'))
 
+    if record.method == PaymentMethod.LAVA:
+        mapping = {
+            'created': ('⏳', 'Ожидает оплаты'),
+            'pending': ('⏳', 'Ожидает оплаты'),
+            'processing': ('⌛', 'Обрабатывается'),
+            'success': ('✅', 'Оплачено'),
+            'paid': ('✅', 'Оплачено'),
+            'completed': ('✅', 'Оплачено'),
+            'cancel': ('❌', 'Отменено'),
+            'canceled': ('❌', 'Отменено'),
+            'cancelled': ('❌', 'Отменено'),
+            'expired': ('⌛', 'Истёк'),
+            'fail': ('❌', 'Ошибка'),
+            'failed': ('❌', 'Ошибка'),
+            'error': ('❌', 'Ошибка'),
+        }
+        return mapping.get(status_str, ('❓', 'Неизвестно'))
+
     return '❓', 'Неизвестно'
 
 
