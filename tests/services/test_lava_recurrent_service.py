@@ -41,6 +41,34 @@ def test_activated_event_key_is_stable_when_non_identity_fields_change() -> None
     assert _event_key(original) == _event_key(replay)
 
 
+def test_recurrent_user_scope_is_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(type(settings), 'is_lava_recurrent_enabled', lambda _self: True)
+    monkeypatch.setattr(settings, 'LAVA_RECURRENT_TEST_USER_IDS', '')
+
+    assert settings.is_lava_recurrent_enabled_for_user(8980488706) is False
+
+
+def test_recurrent_user_scope_allows_only_configured_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(type(settings), 'is_lava_recurrent_enabled', lambda _self: True)
+    monkeypatch.setattr(settings, 'LAVA_RECURRENT_TEST_USER_IDS', '8980488706, invalid')
+
+    assert settings.is_lava_recurrent_enabled_for_user(8980488706) is True
+    assert settings.is_lava_recurrent_enabled_for_user(123456789) is False
+
+
+def test_recurrent_user_scope_requires_explicit_all_for_global_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(type(settings), 'is_lava_recurrent_enabled', lambda _self: True)
+    monkeypatch.setattr(settings, 'LAVA_RECURRENT_TEST_USER_IDS', 'all')
+
+    assert settings.is_lava_recurrent_enabled_for_user(123456789) is True
+
+
 @pytest.mark.asyncio
 async def test_activated_callback_fulfils_direct_service_order() -> None:
     record = SimpleNamespace(
@@ -144,13 +172,13 @@ async def test_invalid_callback_amount_is_rejected_without_credit() -> None:
 async def test_setup_is_allowed_for_an_existing_paid_subscription(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.config import settings
 
-    monkeypatch.setattr(type(settings), 'is_lava_recurrent_enabled', lambda _self: True)
+    monkeypatch.setattr(type(settings), 'is_lava_recurrent_enabled_for_user', lambda _self, _telegram_id: True)
     monkeypatch.setattr(
         type(settings),
         'get_lava_recurrent_product_map',
         lambda _self: {('Стандартный', 30): 'product'},
     )
-    user = SimpleNamespace(id=42, has_had_paid_subscription=True)
+    user = SimpleNamespace(id=42, telegram_id=8980488706, has_had_paid_subscription=True)
     subscription = SimpleNamespace(id=9, is_trial=True)
     tariff = SimpleNamespace(id=3, name='Стандартный', is_daily=False, get_price_for_period=lambda _days: 27900)
     consumer = SimpleNamespace(consumer_id='bedolaga-user-42', email='user@example.com')

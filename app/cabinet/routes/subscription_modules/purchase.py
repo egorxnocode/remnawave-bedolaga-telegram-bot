@@ -311,7 +311,7 @@ async def _build_tariff_response(
             for period in (tariff.period_prices or {})
             if configured_product_id(tariff.name, int(period))
             and int((tariff.period_prices or {})[period]) > 0
-        ] if settings.is_lava_recurrent_enabled() and not tariff.is_daily else [],
+        ] if settings.is_lava_recurrent_enabled_for_user(user.telegram_id) and not tariff.is_daily else [],
     }
 
     # Add promo group info if user has discounts
@@ -410,7 +410,7 @@ async def get_purchase_options(
                     .limit(1)
                 )
             ).scalar_one_or_none()
-            recurrent_checkout_eligible = settings.is_lava_recurrent_enabled()
+            recurrent_checkout_eligible = settings.is_lava_recurrent_enabled_for_user(user.telegram_id)
 
             return {
                 'sales_mode': 'tariffs',

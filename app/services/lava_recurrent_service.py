@@ -94,7 +94,7 @@ async def start_recurrent_subscription(
     consent_ip: str | None = None,
     consent_user_agent: str | None = None,
 ) -> tuple[LavaRecurrentSubscription, str]:
-    if not settings.is_lava_recurrent_enabled():
+    if not settings.is_lava_recurrent_enabled_for_user(user.telegram_id):
         raise ValueError('Lava recurrent payments are disabled')
     locked_subscription = None
     if subscription is not None:

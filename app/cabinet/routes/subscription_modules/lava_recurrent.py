@@ -53,7 +53,7 @@ async def get_lava_recurrent_state(
         user_id=user.id,
     )
     return {
-        'enabled': settings.is_lava_recurrent_enabled(),
+        'enabled': settings.is_lava_recurrent_enabled_for_user(user.telegram_id),
         'subscription': _serialize(current) or None,
     }
 

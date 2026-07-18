@@ -158,7 +158,7 @@ async def checkout_lava_service(
 
     recurrent = bool(request.recurrent and kind == 'tariff')
     if recurrent:
-        if not settings.is_lava_recurrent_enabled() or tariff is None:
+        if not settings.is_lava_recurrent_enabled_for_user(user.telegram_id) or tariff is None:
             raise HTTPException(status_code=400, detail='Lava recurrent payments are unavailable')
         if not request.accepted_terms:
             raise HTTPException(status_code=422, detail='Recurrent payment consent is required')

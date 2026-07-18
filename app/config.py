@@ -925,6 +925,9 @@ class Settings(BaseSettings):
     LAVA_SBP_DISPLAY_NAME: str = 'СБП (Lava)'
     # Recurrent products are configured per merchant; IDs are public UUIDs.
     LAVA_RECURRENT_ENABLED: bool = False
+    # Telegram IDs allowed to see/create recurrent checkout. Empty is
+    # fail-closed; the literal value "all" explicitly enables global access.
+    LAVA_RECURRENT_TEST_USER_IDS: str = ''
     LAVA_RECURRENT_STANDARD_TARIFF_NAME: str = 'Стандартный'
     LAVA_RECURRENT_FAMILY_TARIFF_NAME: str = 'Семейный'
     LAVA_RECURRENT_STANDARD_30_PRODUCT_ID: str | None = None
@@ -2757,6 +2760,29 @@ class Settings(BaseSettings):
             and self.is_lava_enabled()
             and bool(self.get_lava_recurrent_product_map())
         )
+
+    def get_lava_recurrent_user_scope(self) -> set[int] | None:
+        """Return allowed Telegram IDs; ``None`` means explicit global mode."""
+        raw = (self.LAVA_RECURRENT_TEST_USER_IDS or '').strip()
+        if raw.casefold() == 'all':
+            return None
+        if not raw:
+            return set()
+        result: set[int] = set()
+        for item in raw.split(','):
+            try:
+                telegram_id = int(item.strip())
+            except (TypeError, ValueError):
+                continue
+            if telegram_id > 0:
+                result.add(telegram_id)
+        return result
+
+    def is_lava_recurrent_enabled_for_user(self, telegram_id: int | None) -> bool:
+        if not self.is_lava_recurrent_enabled() or telegram_id is None:
+            return False
+        scope = self.get_lava_recurrent_user_scope()
+        return scope is None or int(telegram_id) in scope
 
     def get_lava_sbp_display_name(self) -> str:
         name = (self.LAVA_SBP_DISPLAY_NAME or '').strip()
