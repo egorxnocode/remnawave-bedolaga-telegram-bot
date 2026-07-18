@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.cabinet.apple_iap import apple_iap_only_router, router as apple_iap_router
 
 from .account_linking import merge_router as merge_router, router as account_linking_router
+from .admin_ai_support import router as admin_ai_support_router
 from .admin_apps import router as admin_apps_router
 from .admin_audit_log import router as admin_audit_log_router
 from .admin_ban_system import router as admin_ban_system_router
@@ -124,6 +125,7 @@ router.include_router(gift_router)
 
 # Admin routes (notifications router MUST be before tickets router to avoid route conflict)
 router.include_router(admin_ticket_notifications_router)
+router.include_router(admin_ai_support_router)
 router.include_router(admin_tickets_router)
 router.include_router(admin_settings_router)
 router.include_router(admin_wheel_router)

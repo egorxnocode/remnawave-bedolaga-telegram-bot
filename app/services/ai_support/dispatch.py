@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.crud.ai_support import AiSupportQueueCRUD
+from app.database.crud.ai_support_drafts import AiSupportDraftCRUD
 from app.database.models import TicketMessage
 from app.services.ai_support.types import AiSupportMode
 
@@ -99,6 +100,7 @@ class AiSupportDispatchService:
                     ticket_id=ticket_id,
                     reason_code=reason_code,
                 )
+                await AiSupportDraftCRUD.supersede_pending(db, ticket_id=ticket_id)
         except SQLAlchemyError as error:
             logger.error(
                 'AI support human takeover persistence failed',

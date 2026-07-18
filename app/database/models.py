@@ -3661,6 +3661,13 @@ class AiSupportTicketStateValue(StrEnum):
     DISABLED = 'disabled'
 
 
+class AiSupportDraftStatus(StrEnum):
+    PENDING = 'pending'
+    ACCEPTED = 'accepted'
+    REJECTED = 'rejected'
+    SUPERSEDED = 'superseded'
+
+
 def _ticket_message_author_kind_default(context) -> str:
     parameters = context.get_current_parameters()
     return (
@@ -3881,6 +3888,47 @@ class AiSupportRun(Base):
     started_at = Column(AwareDateTime(), default=func.now(), server_default=func.now(), nullable=False)
     completed_at = Column(AwareDateTime(), nullable=True)
     created_at = Column(AwareDateTime(), default=func.now(), server_default=func.now(), nullable=False)
+
+
+class AiSupportDraft(Base):
+    __tablename__ = 'ai_support_drafts'
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','accepted','rejected','superseded')",
+            name='ck_ai_support_drafts_status',
+        ),
+        Index('ix_ai_support_drafts_ticket_created', 'ticket_id', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey('ai_support_runs.id', ondelete='CASCADE'), nullable=False, unique=True)
+    ticket_id = Column(Integer, ForeignKey('tickets.id', ondelete='CASCADE'), nullable=False, index=True)
+    trigger_message_id = Column(
+        Integer,
+        ForeignKey('ticket_messages.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    status = Column(
+        String(32),
+        default=AiSupportDraftStatus.PENDING.value,
+        server_default=AiSupportDraftStatus.PENDING.value,
+        nullable=False,
+    )
+    answer_text = Column(Text, nullable=False)
+    citations = Column(JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False)
+    reviewed_text = Column(Text, nullable=True)
+    reviewed_by_user_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    reviewed_at = Column(AwareDateTime(), nullable=True)
+    review_reason = Column(String(64), nullable=True)
+    created_at = Column(AwareDateTime(), default=func.now(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        AwareDateTime(),
+        default=func.now(),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
 
 
 class AiSupportTicketState(Base):

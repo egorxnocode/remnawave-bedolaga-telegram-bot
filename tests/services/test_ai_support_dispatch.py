@@ -105,13 +105,20 @@ async def test_human_reply_takes_ticket_over_without_committing(monkeypatch: pyt
     db = _db()
     outcome = SimpleNamespace(jobs_abstained=2)
 
-    with patch(
-        'app.services.ai_support.dispatch.AiSupportQueueCRUD.take_over_ticket',
-        new=AsyncMock(return_value=outcome),
-    ) as take_over:
+    with (
+        patch(
+            'app.services.ai_support.dispatch.AiSupportQueueCRUD.take_over_ticket',
+            new=AsyncMock(return_value=outcome),
+        ) as take_over,
+        patch(
+            'app.services.ai_support.dispatch.AiSupportDraftCRUD.supersede_pending',
+            new=AsyncMock(return_value=1),
+        ) as supersede,
+    ):
         result = await AiSupportDispatchService().on_human_reply(db, ticket_id=7)
 
     assert result.status is AiSupportDispatchStatus.HUMAN_OWNED
     assert result.jobs_abstained == 2
     take_over.assert_awaited_once_with(db, ticket_id=7, reason_code='human_reply')
+    supersede.assert_awaited_once_with(db, ticket_id=7)
     db.commit.assert_not_awaited()
