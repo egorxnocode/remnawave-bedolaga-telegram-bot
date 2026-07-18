@@ -16,6 +16,7 @@ from app.services.ai_support import (
 def test_settings_default_to_off() -> None:
     candidate = Settings(BOT_TOKEN='test')
     assert candidate.AI_SUPPORT_MODE == 'off'
+    assert candidate.AI_SUPPORT_WORKER_ENABLED is False
 
 
 def test_settings_reject_unknown_mode() -> None:
@@ -33,6 +34,11 @@ def test_settings_reject_unknown_mode() -> None:
 def test_settings_reject_unsafe_audit_versions(field: str, value: str) -> None:
     with pytest.raises(ValidationError):
         Settings(BOT_TOKEN='test', **{field: value})
+
+
+def test_settings_reject_tight_worker_poll_loop() -> None:
+    with pytest.raises(ValidationError):
+        Settings(BOT_TOKEN='test', AI_SUPPORT_WORKER_POLL_SECONDS=0)
 
 
 def test_off_mode_is_inert_and_does_not_transform_text() -> None:

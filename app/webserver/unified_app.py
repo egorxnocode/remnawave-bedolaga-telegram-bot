@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.cabinet.apple_iap import apple_iap_only_router
 from app.config import settings
+from app.services.ai_support.runner import ai_support_worker_runner
 from app.services.disposable_email_service import disposable_email_service
 from app.services.payment_service import PaymentService
 from app.webapi.docs import add_redoc_endpoint
@@ -288,6 +289,7 @@ def create_unified_app(
                 'telegram_webhook': telegram_state,
                 'remnawave_webhook': remnawave_webhook_state,
                 'miniapp_static': miniapp_state,
+                'ai_support_worker': ai_support_worker_runner.get_status(),
             }
         )
 

@@ -73,6 +73,8 @@ async def test_unified_app_health_reports_features(monkeypatch: pytest.MonkeyPat
     assert payload['payment_webhooks']['providers']['tribute'] is True
     assert payload['miniapp_static']['mounted'] is True
     assert payload['miniapp_static']['path'].endswith('miniapp')
+    assert payload['ai_support_worker']['configured_enabled'] is False
+    assert payload['ai_support_worker']['state'] == 'disabled'
 
 
 def _build_unified_app(monkeypatch: pytest.MonkeyPatch, docs_enabled: bool) -> FastAPI:

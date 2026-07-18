@@ -17,6 +17,7 @@ from app.database.migrations import run_alembic_upgrade
 from app.database.models import PaymentMethod
 from app.localization.loader import ensure_locale_templates
 from app.logging_config import _resolve_log_level, setup_logging
+from app.services.ai_support.runner import ai_support_worker_runner
 from app.services.backup_service import backup_service
 from app.services.ban_notification_service import ban_notification_service
 from app.services.broadcast_service import broadcast_service
@@ -540,6 +541,18 @@ async def main():
             else:
                 stage.skip('NaloGO отключен настройками')
 
+        async with timeline.stage(
+            'Воркер ИИ-поддержки',
+            '🧠',
+            success_message='Воркер ИИ-поддержки проверен',
+        ) as stage:
+            started = await ai_support_worker_runner.start()
+            if started:
+                stage.log(f'Режим: {settings.AI_SUPPORT_MODE}')
+                stage.success('Фоновая обработка очереди активна')
+            else:
+                stage.skip('Воркер выключен безопасными настройками')
+
         bot_run_mode = settings.get_bot_run_mode()
         polling_enabled = bot_run_mode == 'polling'
         telegram_webhook_enabled = bot_run_mode == 'webhook'
@@ -789,6 +802,7 @@ async def main():
             f'Спасательный круг: {"Включен" if grace_period_task else "Отключен"}',
             f'Проверка версий: {"Включен" if version_check_task else "Отключен"}',
             f'Отчеты: {"Включен" if reporting_service.is_running() else "Отключен"}',
+            f'ИИ-поддержка: {"Включена" if ai_support_worker_runner.is_running() else "Отключена"}',
         ]
         services_lines.append('Проверка пополнений: ' + ('Включена' if verification_providers else 'Отключена'))
         services_lines.append(
@@ -894,6 +908,12 @@ async def main():
             await auto_payment_verification_service.stop()
         except Exception as error:
             logger.error('Ошибка остановки сервиса автопроверки пополнений', error=error)
+
+        logger.info('ℹ️ Остановка воркера ИИ-поддержки...')
+        try:
+            await ai_support_worker_runner.stop()
+        except Exception as error:
+            logger.error('Ошибка остановки воркера ИИ-поддержки', error_type=type(error).__name__)
 
         if monitoring_task and not monitoring_task.done():
             logger.info('ℹ️ Остановка службы мониторинга...')

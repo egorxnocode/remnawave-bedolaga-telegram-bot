@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     # AI support is fail-closed. Only an explicit environment change may move
     # it to shadow/auto; the admin settings API does not expose this switch.
     AI_SUPPORT_MODE: Literal['off', 'shadow', 'auto'] = 'off'
+    AI_SUPPORT_WORKER_ENABLED: bool = False
+    AI_SUPPORT_WORKER_POLL_SECONDS: float = Field(default=1.0, ge=0.1, le=60.0)
+    AI_SUPPORT_WORKER_SHUTDOWN_SECONDS: float = Field(default=10.0, ge=1.0, le=60.0)
     AI_SUPPORT_PROMPT_VERSION: str = Field(
         default='support-v1',
         min_length=1,
