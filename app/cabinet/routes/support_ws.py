@@ -872,6 +872,7 @@ async def _handle_ticket_reply(db: AsyncSession, session: SupportWsSession, payl
         user_id=session.context.user_id if is_from_admin else ticket.user_id,
         message_text=body,
         is_from_admin=is_from_admin,
+        author_kind='admin' if is_from_admin else 'user',
         has_media=bool(primary),
         media_type=primary.get('type') if primary else None,
         media_file_id=primary.get('file_id') if primary else None,

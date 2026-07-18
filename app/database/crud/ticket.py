@@ -5,7 +5,7 @@ from sqlalchemy import and_, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.database.models import SupportAuditLog, Ticket, TicketMessage, TicketStatus
+from app.database.models import SupportAuditLog, Ticket, TicketMessage, TicketMessageAuthorKind, TicketStatus
 
 
 logger = structlog.get_logger(__name__)
@@ -38,6 +38,7 @@ class TicketCRUD:
             user_id=user_id,
             message_text=message_text,
             is_from_admin=False,
+            author_kind=TicketMessageAuthorKind.USER.value,
             has_media=bool(media_type and media_file_id) or bool(media_items),
             media_type=media_type,
             media_file_id=media_file_id,
@@ -391,6 +392,7 @@ class TicketMessageCRUD:
             user_id=user_id,
             message_text=message_text,
             is_from_admin=is_from_admin,
+            author_kind=(TicketMessageAuthorKind.ADMIN.value if is_from_admin else TicketMessageAuthorKind.USER.value),
             has_media=bool(media_type and media_file_id) or bool(media_items),
             media_type=media_type,
             media_file_id=media_file_id,

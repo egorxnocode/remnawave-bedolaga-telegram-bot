@@ -491,6 +491,7 @@ async def reply_to_ticket(
         user_id=admin.id,
         message_text=request.message,
         is_from_admin=True,
+        author_kind='admin',
         has_media=has_media,
         media_type=primary_type if has_media else None,
         media_file_id=primary_file_id if has_media else None,

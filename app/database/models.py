@@ -3631,6 +3631,43 @@ class TicketStatus(Enum):
     PENDING = 'pending'
 
 
+class TicketMessageAuthorKind(StrEnum):
+    USER = 'user'
+    ADMIN = 'admin'
+    AI = 'ai'
+    SYSTEM = 'system'
+
+
+class AiSupportJobStatus(StrEnum):
+    PENDING = 'pending'
+    PROCESSING = 'processing'
+    COMPLETED = 'completed'
+    ESCALATED = 'escalated'
+    FAILED = 'failed'
+
+
+class AiSupportRunDecision(StrEnum):
+    ANSWER = 'answer'
+    ESCALATE = 'escalate'
+    ABSTAIN = 'abstain'
+    ERROR = 'error'
+
+
+class AiSupportTicketStateValue(StrEnum):
+    ACTIVE = 'active'
+    PROCESSING = 'processing'
+    ESCALATED = 'escalated'
+    HUMAN_OWNED = 'human_owned'
+    DISABLED = 'disabled'
+
+
+def _ticket_message_author_kind_default(context) -> str:
+    parameters = context.get_current_parameters()
+    return (
+        TicketMessageAuthorKind.ADMIN.value if parameters.get('is_from_admin') else TicketMessageAuthorKind.USER.value
+    )
+
+
 class Ticket(Base):
     __tablename__ = 'tickets'
 
@@ -3699,6 +3736,13 @@ class Ticket(Base):
 
 class TicketMessage(Base):
     __tablename__ = 'ticket_messages'
+    __table_args__ = (
+        CheckConstraint(
+            "author_kind IN ('user','admin','ai','system')",
+            name='ck_ticket_messages_author_kind',
+        ),
+        UniqueConstraint('ai_run_id', name='uq_ticket_messages_ai_run_id'),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     ticket_id = Column(Integer, ForeignKey('tickets.id', ondelete='CASCADE'), nullable=False)
@@ -3706,6 +3750,21 @@ class TicketMessage(Base):
 
     message_text = Column(Text, nullable=False)
     is_from_admin = Column(Boolean, default=False, nullable=False)
+    author_kind = Column(
+        String(16),
+        default=_ticket_message_author_kind_default,
+        nullable=False,
+    )
+    ai_run_id = Column(
+        Integer,
+        ForeignKey(
+            'ai_support_runs.id',
+            name='fk_ticket_messages_ai_run_id',
+            ondelete='SET NULL',
+            use_alter=True,
+        ),
+        nullable=True,
+    )
 
     # Для медиа файлов
     has_media = Column(Boolean, default=False)
@@ -3729,8 +3788,133 @@ class TicketMessage(Base):
     def is_admin_message(self) -> bool:
         return self.is_from_admin
 
+    @property
+    def is_ai_message(self) -> bool:
+        return self.author_kind == TicketMessageAuthorKind.AI.value
+
     def __repr__(self):
         return f"<TicketMessage(id={self.id}, ticket_id={self.ticket_id}, is_admin={self.is_from_admin}, text='{self.message_text[:30]}...')>"
+
+
+class AiSupportJob(Base):
+    __tablename__ = 'ai_support_jobs'
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','processing','completed','escalated','failed')",
+            name='ck_ai_support_jobs_status',
+        ),
+        CheckConstraint('attempt_count >= 0', name='ck_ai_support_jobs_attempt_count'),
+        UniqueConstraint('trigger_message_id', name='uq_ai_support_jobs_trigger_message_id'),
+        Index('ix_ai_support_jobs_claim', 'status', 'available_at'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_id = Column(Integer, ForeignKey('tickets.id', ondelete='CASCADE'), nullable=False, index=True)
+    trigger_message_id = Column(
+        Integer,
+        ForeignKey('ticket_messages.id', ondelete='CASCADE'),
+        nullable=False,
+    )
+    channel = Column(String(32), nullable=False)
+    status = Column(
+        String(32),
+        default=AiSupportJobStatus.PENDING.value,
+        server_default=AiSupportJobStatus.PENDING.value,
+        nullable=False,
+    )
+    attempt_count = Column(Integer, default=0, server_default='0', nullable=False)
+    available_at = Column(AwareDateTime(), default=func.now(), server_default=func.now(), nullable=False)
+    locked_at = Column(AwareDateTime(), nullable=True, index=True)
+    last_error_code = Column(String(64), nullable=True)
+    created_at = Column(AwareDateTime(), default=func.now(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        AwareDateTime(),
+        default=func.now(),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class AiSupportRun(Base):
+    __tablename__ = 'ai_support_runs'
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('answer','escalate','abstain','error')",
+            name='ck_ai_support_runs_decision',
+        ),
+        CheckConstraint(
+            'latency_ms IS NULL OR latency_ms >= 0',
+            name='ck_ai_support_runs_latency_ms',
+        ),
+        CheckConstraint(
+            'input_tokens >= 0 AND output_tokens >= 0 AND cache_read_tokens >= 0 '
+            'AND cache_write_tokens >= 0 AND estimated_cost_microusd >= 0',
+            name='ck_ai_support_runs_usage_nonnegative',
+        ),
+        Index('ix_ai_support_runs_ticket_created', 'ticket_id', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(Integer, ForeignKey('ai_support_jobs.id', ondelete='CASCADE'), nullable=False, index=True)
+    ticket_id = Column(Integer, ForeignKey('tickets.id', ondelete='CASCADE'), nullable=False, index=True)
+    trigger_message_id = Column(
+        Integer,
+        ForeignKey('ticket_messages.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    provider = Column(String(32), nullable=True)
+    model_id = Column(String(128), nullable=True)
+    prompt_version = Column(String(64), nullable=False)
+    kb_version = Column(String(64), nullable=False)
+    decision = Column(String(32), nullable=False)
+    sanitized_intent = Column(String(64), nullable=True)
+    reason_codes = Column(JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False)
+    latency_ms = Column(Integer, nullable=True)
+    input_tokens = Column(Integer, default=0, server_default='0', nullable=False)
+    output_tokens = Column(Integer, default=0, server_default='0', nullable=False)
+    cache_read_tokens = Column(Integer, default=0, server_default='0', nullable=False)
+    cache_write_tokens = Column(Integer, default=0, server_default='0', nullable=False)
+    estimated_cost_microusd = Column(BigInteger, default=0, server_default='0', nullable=False)
+    tool_events = Column(JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False)
+    started_at = Column(AwareDateTime(), default=func.now(), server_default=func.now(), nullable=False)
+    completed_at = Column(AwareDateTime(), nullable=True)
+    created_at = Column(AwareDateTime(), default=func.now(), server_default=func.now(), nullable=False)
+
+
+class AiSupportTicketState(Base):
+    __tablename__ = 'ai_support_ticket_states'
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('active','processing','escalated','human_owned','disabled')",
+            name='ck_ai_support_ticket_states_state',
+        ),
+    )
+
+    ticket_id = Column(Integer, ForeignKey('tickets.id', ondelete='CASCADE'), primary_key=True)
+    state = Column(
+        String(32),
+        default=AiSupportTicketStateValue.ACTIVE.value,
+        server_default=AiSupportTicketStateValue.ACTIVE.value,
+        nullable=False,
+    )
+    last_trigger_message_id = Column(
+        Integer,
+        ForeignKey('ticket_messages.id', ondelete='SET NULL'),
+        nullable=True,
+    )
+    last_run_id = Column(Integer, ForeignKey('ai_support_runs.id', ondelete='SET NULL'), nullable=True)
+    taken_over_at = Column(AwareDateTime(), nullable=True)
+    takeover_reason = Column(String(64), nullable=True)
+    created_at = Column(AwareDateTime(), default=func.now(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        AwareDateTime(),
+        default=func.now(),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
 
 
 class WebApiToken(Base):
