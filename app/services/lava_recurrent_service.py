@@ -277,7 +277,16 @@ async def confirm_recurrent_cancellation(
         status_response = await lava_service.get_recurrent_subscription_status(**identifier)
         status_data = status_response.get('data') or status_response
         provider_status = str(status_data.get('status') or status_data.get('subscriptionStatus') or '').strip().lower()
-        confirmed = provider_status == 'deactivated'
+        cancelled_before_activation = (
+            unsubscribe_error is not None and unsubscribe_error.status_code == 404 and provider_status == 'created'
+        )
+        confirmed = provider_status == 'deactivated' or cancelled_before_activation
+        if cancelled_before_activation:
+            logger.info(
+                'Lava recurrent checkout cancelled before first activation',
+                recurrent_id=record.id,
+            )
+            record.deactivated_reason = 'Cancelled before first recurrent activation'
         if not confirmed and unsubscribe_error is not None:
             raise unsubscribe_error
 

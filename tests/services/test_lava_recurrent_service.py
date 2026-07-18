@@ -311,6 +311,44 @@ async def test_cancel_recurrent_accepts_deactivated_provider_status_after_lost_r
 
 
 @pytest.mark.asyncio
+async def test_cancel_created_recurrent_accepts_provider_inactive_response() -> None:
+    record = SimpleNamespace(
+        id=7,
+        status='created',
+        is_active=False,
+        updated_at=None,
+        deactivated_at=None,
+        deactivated_reason=None,
+        lava_subscription_id='provider-sub',
+        order_id='merchant-order',
+    )
+    unpaid_order = SimpleNamespace(status='pending', failure_reason=None, updated_at=None)
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=_result(unpaid_order))
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
+
+    with (
+        patch(
+            'app.services.lava_recurrent_service.lava_service.unsubscribe_recurrent_subscription',
+            AsyncMock(side_effect=LavaAPIError(404, 'Подписка не активна')),
+        ),
+        patch(
+            'app.services.lava_recurrent_service.lava_service.get_recurrent_subscription_status',
+            AsyncMock(return_value={'data': {'status': 'created'}}),
+        ),
+    ):
+        result = await cancel_recurrent_subscription(db, record)
+
+    assert result.status == 'deactivated'
+    assert result.is_active is False
+    assert result.deactivated_reason == 'Cancelled before first recurrent activation'
+    assert unpaid_order.status == 'cancelled'
+    assert unpaid_order.failure_reason == 'Recurrent checkout deactivated before payment'
+    assert db.commit.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_suspended_callback_does_not_restore_cancel_requested_subscription() -> None:
     record = SimpleNamespace(
         id=7,
