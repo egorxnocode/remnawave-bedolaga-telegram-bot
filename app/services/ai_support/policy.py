@@ -26,7 +26,7 @@ _PATTERNS: tuple[tuple[RedactionCategory, re.Pattern[str]], ...] = (
     (RedactionCategory.URL, re.compile(r'(?i)(?:https?://|tg://|t\.me/)\S+')),
     (
         RedactionCategory.EMAIL,
-        re.compile(r'(?i)(?<![\w.+-])[\w.+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+(?![\w.-])'),
+        re.compile(r'(?i)(?<![\w.+-])[\w.+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+(?![\w-])'),
     ),
     (
         RedactionCategory.UUID,

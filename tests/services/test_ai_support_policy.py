@@ -73,6 +73,16 @@ def test_personal_identifiers_are_redacted_before_provider(message: str, categor
     assert '[REDACTED_' in result.redaction.text
 
 
+def test_email_before_sentence_punctuation_is_redacted() -> None:
+    result = assess_customer_message(
+        AiSupportMode.SHADOW,
+        'Моя почта user@example.com. Как подключить телефон?',
+    )
+
+    assert result.decision is AiSupportDecision.CALL_PROVIDER
+    assert result.redaction.text == 'Моя почта [REDACTED_EMAIL]. Как подключить телефон?'
+
+
 @pytest.mark.parametrize(
     ('message', 'category'),
     [

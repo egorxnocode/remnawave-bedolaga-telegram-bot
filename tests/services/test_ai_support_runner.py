@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.config import settings
+from app.services.ai_support.knowledge import AiSupportKnowledgeError, load_ai_support_knowledge
 from app.services.ai_support.runner import AiSupportWorkerRunner
 from app.services.ai_support.worker import AiSupportWorkerResult, AiSupportWorkerStatus
 
@@ -98,6 +99,30 @@ async def test_start_requires_non_off_mode(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_start_fails_closed_when_knowledge_artifact_is_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, 'AI_SUPPORT_WORKER_ENABLED', True)
+    monkeypatch.setattr(settings, 'AI_SUPPORT_MODE', 'shadow')
+    session = _Session()
+    process_next = AsyncMock()
+
+    def broken_loader():
+        raise AiSupportKnowledgeError('private artifact detail')
+
+    runner = AiSupportWorkerRunner(
+        worker=SimpleNamespace(process_next=process_next),
+        session_factory=lambda: session,
+        knowledge_loader=broken_loader,
+    )
+
+    assert await runner.start() is False
+    status = runner.get_status()
+    assert status['state'] == 'blocked_knowledge'
+    assert status['knowledge_error_type'] == 'AiSupportKnowledgeError'
+    assert 'private artifact detail' not in repr(status)
+    process_next.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_running_loop_stops_gracefully_and_reports_health(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, 'AI_SUPPORT_WORKER_ENABLED', True)
     monkeypatch.setattr(settings, 'AI_SUPPORT_MODE', 'shadow')
@@ -117,6 +142,8 @@ async def test_running_loop_stops_gracefully_and_reports_health(monkeypatch: pyt
     assert running_status['state'] == 'running'
     assert running_status['healthy'] is True
     assert running_status['last_success_at'] is not None
+    assert running_status['kb_version'] == load_ai_support_knowledge().kb_version
+    assert running_status['kb_sha256'] == load_ai_support_knowledge().package_sha256
 
     await runner.stop()
 

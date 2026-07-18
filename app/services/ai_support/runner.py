@@ -12,6 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.database import AsyncSessionLocal
+from app.services.ai_support.knowledge import (
+    AiSupportKnowledgePackage,
+    load_ai_support_knowledge,
+)
 from app.services.ai_support.types import AiSupportMode
 from app.services.ai_support.worker import (
     AiSupportWorker,
@@ -24,6 +28,7 @@ from app.services.ai_support.worker import (
 logger = structlog.get_logger(__name__)
 
 SessionFactory = Callable[[], Any]
+KnowledgeLoader = Callable[[], AiSupportKnowledgePackage]
 
 
 class AiSupportWorkerRunner:
@@ -34,9 +39,11 @@ class AiSupportWorkerRunner:
         *,
         worker: AiSupportWorker = ai_support_worker,
         session_factory: SessionFactory = AsyncSessionLocal,
+        knowledge_loader: KnowledgeLoader = load_ai_support_knowledge,
     ) -> None:
         self._worker = worker
         self._session_factory = session_factory
+        self._knowledge_loader = knowledge_loader
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
         self._started_at: datetime | None = None
@@ -47,6 +54,9 @@ class AiSupportWorkerRunner:
         self._last_error_type: str | None = None
         self._processed_jobs = 0
         self._consecutive_failures = 0
+        self._kb_version: str | None = None
+        self._kb_sha256: str | None = None
+        self._knowledge_error_type: str | None = None
 
     @staticmethod
     def configured_enabled() -> bool:
@@ -68,6 +78,19 @@ class AiSupportWorkerRunner:
         if self.mode() is AiSupportMode.OFF:
             logger.warning('AI support worker blocked because mode is off')
             return False
+        try:
+            knowledge = self._knowledge_loader()
+        except Exception as error:
+            self._knowledge_error_type = type(error).__name__
+            logger.error(
+                'AI support worker blocked by invalid knowledge artifact',
+                error_type=self._knowledge_error_type,
+            )
+            return False
+
+        self._kb_version = knowledge.kb_version
+        self._kb_sha256 = knowledge.package_sha256
+        self._knowledge_error_type = None
 
         self._stop_event.clear()
         self._started_at = datetime.now(UTC)
@@ -161,6 +184,8 @@ class AiSupportWorkerRunner:
             state = 'disabled'
         elif mode is AiSupportMode.OFF:
             state = 'blocked_mode_off'
+        elif self._knowledge_error_type is not None:
+            state = 'blocked_knowledge'
         elif running:
             state = 'running'
         else:
@@ -175,6 +200,9 @@ class AiSupportWorkerRunner:
             'processed_jobs': self._processed_jobs,
             'consecutive_failures': self._consecutive_failures,
             'last_error_type': self._last_error_type,
+            'knowledge_error_type': self._knowledge_error_type,
+            'kb_version': self._kb_version,
+            'kb_sha256': self._kb_sha256,
             'started_at': self._iso(self._started_at),
             'stopped_at': self._iso(self._stopped_at),
             'last_cycle_at': self._iso(self._last_cycle_at),
