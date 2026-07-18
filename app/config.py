@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     AI_SUPPORT_PROVIDER_MAX_RETRIES: int = Field(default=2, ge=0, le=3)
     AI_SUPPORT_PROVIDER_CIRCUIT_FAILURES: int = Field(default=5, ge=1, le=20)
     AI_SUPPORT_PROVIDER_CIRCUIT_RESET_SECONDS: float = Field(default=60.0, ge=5.0, le=600.0)
+    AI_SUPPORT_DAILY_TOKEN_BUDGET: int = Field(default=0, ge=0, le=10_000_000)
 
     # MiniApp tickets settings
     MINIAPP_TICKETS_ENABLED: bool = True  # Enable/disable tickets section in miniapp

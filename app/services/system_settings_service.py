@@ -96,6 +96,7 @@ class BotConfigurationService:
         'AI_SUPPORT_PROVIDER_MAX_RETRIES',
         'AI_SUPPORT_PROVIDER_CIRCUIT_FAILURES',
         'AI_SUPPORT_PROVIDER_CIRCUIT_RESET_SECONDS',
+        'AI_SUPPORT_DAILY_TOKEN_BUDGET',
     }
 
     READ_ONLY_KEYS: set[str] = set()
