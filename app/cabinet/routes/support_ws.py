@@ -39,6 +39,7 @@ from app.database.crud.ticket_notification import TicketNotificationCRUD
 from app.database.crud.user import get_user_by_id
 from app.database.database import AsyncSessionLocal
 from app.database.models import Ticket, TicketMessage, User, UserStatus
+from app.services.ai_support import ai_support_dispatch_service
 from app.services.blacklist_service import blacklist_service
 from app.services.maintenance_service import maintenance_service
 from app.services.permission_service import PermissionService
@@ -891,6 +892,15 @@ async def _handle_ticket_reply(db: AsyncSession, session: SupportWsSession, payl
         if hasattr(ticket, 'last_sla_reminder_at'):
             ticket.last_sla_reminder_at = None
     ticket.updated_at = _utc_now()
+    if is_from_admin:
+        await ai_support_dispatch_service.on_human_reply(db, ticket_id=ticket.id)
+    else:
+        await ai_support_dispatch_service.on_user_message(
+            db,
+            ticket_id=ticket.id,
+            message=message,
+            channel='support_ws',
+        )
     await db.commit()
     await db.refresh(message)
     await db.refresh(ticket, ['messages', 'user'])

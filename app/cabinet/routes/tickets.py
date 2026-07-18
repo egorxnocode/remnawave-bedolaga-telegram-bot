@@ -15,6 +15,7 @@ from app.config import settings
 from app.database.crud.ticket_notification import TicketNotificationCRUD
 from app.database.models import Ticket, TicketMessage, User
 from app.handlers.tickets import notify_admins_about_new_ticket, notify_admins_about_ticket_reply
+from app.services.ai_support import ai_support_dispatch_service
 
 from ..dependencies import get_cabinet_db, get_current_cabinet_user
 from ..schemas.tickets import (
@@ -185,6 +186,12 @@ async def create_ticket(
         created_at=datetime.now(UTC),
     )
     db.add(message)
+    await ai_support_dispatch_service.on_user_message(
+        db,
+        ticket_id=ticket.id,
+        message=message,
+        channel='cabinet',
+    )
     await db.commit()
 
     # Refresh to get relationships
@@ -323,6 +330,12 @@ async def add_ticket_message(
         ticket.status = 'pending'
     ticket.updated_at = datetime.now(UTC)
 
+    await ai_support_dispatch_service.on_user_message(
+        db,
+        ticket_id=ticket.id,
+        message=message,
+        channel='cabinet',
+    )
     await db.commit()
     await db.refresh(message)
 

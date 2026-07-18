@@ -23,6 +23,18 @@ def test_settings_reject_unknown_mode() -> None:
         Settings(BOT_TOKEN='test', AI_SUPPORT_MODE='enabled')
 
 
+@pytest.mark.parametrize(
+    ('field', 'value'),
+    [
+        ('AI_SUPPORT_PROMPT_VERSION', '../prompt'),
+        ('AI_SUPPORT_KB_VERSION', 'x' * 65),
+    ],
+)
+def test_settings_reject_unsafe_audit_versions(field: str, value: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings(BOT_TOKEN='test', **{field: value})
+
+
 def test_off_mode_is_inert_and_does_not_transform_text() -> None:
     raw = 'token=top-secret'
     result = assess_customer_message(AiSupportMode.OFF, raw)

@@ -219,6 +219,7 @@ async def reply_to_ticket(
         user_id=ticket.user_id,
         message_text=final_message_text,
         is_from_admin=True,
+        channel='webapi',
         media_type=payload.media_type,
         media_file_id=payload.media_file_id,
         media_caption=payload.media_caption,

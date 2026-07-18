@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database.models import SupportAuditLog, Ticket, TicketMessage, TicketMessageAuthorKind, TicketStatus
+from app.services.ai_support import ai_support_dispatch_service
 
 
 logger = structlog.get_logger(__name__)
@@ -22,6 +23,7 @@ class TicketCRUD:
         message_text: str,
         priority: str = 'normal',
         *,
+        channel: str = 'telegram',
         media_type: str | None = None,
         media_file_id: str | None = None,
         media_caption: str | None = None,
@@ -46,6 +48,13 @@ class TicketCRUD:
             media_items=media_items,
         )
         db.add(message)
+
+        await ai_support_dispatch_service.on_user_message(
+            db,
+            ticket_id=ticket.id,
+            message=message,
+            channel=channel,
+        )
 
         await db.commit()
         await db.refresh(ticket)
@@ -385,6 +394,7 @@ class TicketMessageCRUD:
         media_file_id: str | None = None,
         media_caption: str | None = None,
         media_items: list[dict] | None = None,
+        channel: str = 'telegram',
     ) -> TicketMessage:
         """Добавить сообщение в тикет"""
         message = TicketMessage(
@@ -423,6 +433,16 @@ class TicketMessageCRUD:
                     pass
 
             ticket.updated_at = datetime.now(UTC)
+
+        if is_from_admin:
+            await ai_support_dispatch_service.on_human_reply(db, ticket_id=ticket_id)
+        else:
+            await ai_support_dispatch_service.on_user_message(
+                db,
+                ticket_id=ticket_id,
+                message=message,
+                channel=channel,
+            )
 
         await db.commit()
         await db.refresh(message)

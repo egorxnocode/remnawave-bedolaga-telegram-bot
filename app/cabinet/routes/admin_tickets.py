@@ -16,6 +16,7 @@ from app.config import settings
 from app.database.crud.ticket import TicketCRUD
 from app.database.crud.ticket_notification import TicketNotificationCRUD
 from app.database.models import Ticket, TicketMessage, User
+from app.services.ai_support import ai_support_dispatch_service
 
 from ..dependencies import get_cabinet_db, require_permission
 from ..schemas.tickets import TicketMediaItem, TicketMessageResponse, _validate_media_bundle
@@ -505,6 +506,7 @@ async def reply_to_ticket(
     ticket.status = 'answered'
     ticket.updated_at = datetime.now(UTC)
 
+    await ai_support_dispatch_service.on_human_reply(db, ticket_id=ticket.id)
     await db.commit()
     await db.refresh(message)
 

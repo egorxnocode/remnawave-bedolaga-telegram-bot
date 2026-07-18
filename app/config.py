@@ -46,6 +46,18 @@ class Settings(BaseSettings):
     # AI support is fail-closed. Only an explicit environment change may move
     # it to shadow/auto; the admin settings API does not expose this switch.
     AI_SUPPORT_MODE: Literal['off', 'shadow', 'auto'] = 'off'
+    AI_SUPPORT_PROMPT_VERSION: str = Field(
+        default='support-v1',
+        min_length=1,
+        max_length=64,
+        pattern=r'^[a-z0-9][a-z0-9._-]*$',
+    )
+    AI_SUPPORT_KB_VERSION: str = Field(
+        default='2026-07-18.1',
+        min_length=1,
+        max_length=64,
+        pattern=r'^[a-z0-9][a-z0-9._-]*$',
+    )
 
     # MiniApp tickets settings
     MINIAPP_TICKETS_ENABLED: bool = True  # Enable/disable tickets section in miniapp

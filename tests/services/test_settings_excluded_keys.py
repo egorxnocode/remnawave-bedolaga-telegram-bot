@@ -22,7 +22,11 @@ EXCLUDED_AUTH_KEYS = [
     'WEBHOOK_SECRET_TOKEN',
 ]
 
-EXCLUDED_SAFETY_KEYS = ['AI_SUPPORT_MODE']
+EXCLUDED_SAFETY_KEYS = [
+    'AI_SUPPORT_MODE',
+    'AI_SUPPORT_PROMPT_VERSION',
+    'AI_SUPPORT_KB_VERSION',
+]
 
 
 def test_identity_and_auth_secrets_are_excluded() -> None:
