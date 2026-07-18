@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database.crud.user import get_user_by_email
 from app.database.models import Subscription, Tariff, User
 from app.services.lava_order_service import attach_provider_payment, create_service_order
 from app.services.lava_recurrent_service import (
@@ -200,7 +201,12 @@ async def checkout_lava_service(
             raise HTTPException(status_code=502, detail=error.message) from error
 
     if recurrent:
-        email = str(request.email or user.email or '').strip()
+        email = str(user.email or request.email or '').strip().lower()
+        should_store_email = not bool(user.email)
+        if should_store_email:
+            email_owner = await get_user_by_email(db, email)
+            if email_owner is not None and email_owner.id != user.id:
+                raise HTTPException(status_code=409, detail='Email is already used by another account')
         try:
             record, payment_url = await start_recurrent_subscription(
                 db,
@@ -219,6 +225,13 @@ async def checkout_lava_service(
             await db.commit()
             code = 502 if isinstance(error, LavaAPIError) else 400
             raise HTTPException(status_code=code, detail=str(error)) from error
+        if should_store_email:
+            # Keep the provider-accepted checkout email on the Cabinet account
+            # so subsequent recurrent purchases can reuse it. It remains
+            # unverified: payment checkout is not proof of mailbox ownership
+            # and must not grant email-auth or administrator trust.
+            user.email = email
+            await db.commit()
         return {'order_id': order.id, 'payment_mode': 'recurrent', 'payment_url': payment_url, 'recurrent_id': record.id}
 
     provider_order_id = f'lavasvc{order.id}_{uuid4().hex[:24]}'

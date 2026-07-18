@@ -35,7 +35,15 @@ from app.database.crud.tariff import get_tariff_by_id, get_tariffs_for_user
 from app.database.crud.transaction import create_transaction
 from app.database.crud.user import add_user_balance, get_user_by_id, subtract_user_balance
 from app.database.database import AsyncSessionLocal
-from app.database.models import PaymentMethod, Subscription, Tariff, Transaction, TransactionType, User
+from app.database.models import (
+    LavaRecurrentConsumer,
+    PaymentMethod,
+    Subscription,
+    Tariff,
+    Transaction,
+    TransactionType,
+    User,
+)
 from app.services.lava_recurrent_service import configured_product_id
 from app.services.notification_delivery_service import (
     NotificationType,
@@ -411,6 +419,14 @@ async def get_purchase_options(
                 )
             ).scalar_one_or_none()
             recurrent_checkout_eligible = settings.is_lava_recurrent_enabled_for_user(user.telegram_id)
+            recurrent_consumer_email = (
+                await db.execute(
+                    select(LavaRecurrentConsumer.email)
+                    .where(LavaRecurrentConsumer.user_id == user.id)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            recurrent_email = str(user.email or recurrent_consumer_email or '').strip() or None
 
             return {
                 'sales_mode': 'tariffs',
@@ -432,7 +448,8 @@ async def get_purchase_options(
                 'tariff_switch_downgrade_enabled': settings.TARIFF_SWITCH_DOWNGRADE_ENABLED,
                 'lava_recurrent_checkout_eligible': recurrent_checkout_eligible,
                 'lava_recurrent_trial_subscription_id': trial_subscription.id if trial_subscription else None,
-                'lava_recurrent_email_required': not bool(user.email),
+                'lava_recurrent_email_required': not bool(recurrent_email),
+                'lava_recurrent_email': recurrent_email,
             }
 
         # Classic mode - return periods
