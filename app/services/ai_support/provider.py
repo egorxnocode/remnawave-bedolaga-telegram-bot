@@ -163,3 +163,6 @@ class AnthropicSupportProvider:
             'messages': [{'role': 'user', 'content': request.model_dump_json()}],
             'output_config': {'format': {'type': 'json_schema', 'schema': AiSupportProviderResult.model_json_schema()}},
         }
+
+
+anthropic_support_provider = AnthropicSupportProvider()

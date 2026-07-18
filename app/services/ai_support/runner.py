@@ -133,6 +133,7 @@ class AiSupportWorkerRunner:
                 if result.status in {
                     AiSupportWorkerStatus.ESCALATED,
                     AiSupportWorkerStatus.PROVIDER_UNAVAILABLE,
+                    AiSupportWorkerStatus.DRAFT_CREATED,
                 }:
                     await db.commit()
                 else:

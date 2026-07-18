@@ -53,6 +53,22 @@ async def test_terminal_job_commits_one_transaction() -> None:
 
 
 @pytest.mark.asyncio
+async def test_shadow_draft_commits_one_transaction() -> None:
+    outcome = AiSupportWorkerResult(
+        AiSupportWorkerStatus.DRAFT_CREATED,
+        ('answer_ready',),
+        job_id=19,
+        run_id=31,
+    )
+    runner, session, _ = _runner(outcome)
+
+    await runner.run_once()
+
+    session.commit.assert_awaited_once_with()
+    session.rollback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_idle_cycle_rolls_back_read_transaction() -> None:
     outcome = AiSupportWorkerResult(AiSupportWorkerStatus.IDLE, ('queue_empty',))
     runner, session, _ = _runner(outcome)
@@ -128,9 +144,7 @@ async def test_running_loop_stops_gracefully_and_reports_health(monkeypatch: pyt
     monkeypatch.setattr(settings, 'AI_SUPPORT_MODE', 'shadow')
     monkeypatch.setattr(settings, 'AI_SUPPORT_WORKER_POLL_SECONDS', 0.1)
     monkeypatch.setattr(settings, 'AI_SUPPORT_WORKER_SHUTDOWN_SECONDS', 1.0)
-    runner, session, _ = _runner(
-        AiSupportWorkerResult(AiSupportWorkerStatus.IDLE, ('queue_empty',))
-    )
+    runner, session, _ = _runner(AiSupportWorkerResult(AiSupportWorkerStatus.IDLE, ('queue_empty',)))
 
     assert await runner.start() is True
     for _ in range(20):
