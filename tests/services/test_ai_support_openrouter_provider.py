@@ -104,10 +104,27 @@ async def test_success_uses_bearer_auth_and_prompt_json(configured: None) -> Non
     assert call.kwargs['headers']['Authorization'] == 'Bearer test-or-secret'
     assert 'test-or-secret' not in str(call.kwargs['json'])
     assert 'output_config' not in call.kwargs['json']
-    assert 'response_format' not in call.kwargs['json']
+    assert call.kwargs['json']['response_format'] == {'type': 'json_object'}
     assert call.kwargs['json']['messages'][0]['role'] == 'system'
     assert call.kwargs['json']['messages'][1]['role'] == 'user'
     assert call.kwargs['json']['model'] == 'anthropic/claude-haiku-4-5'
+
+
+@pytest.mark.asyncio
+async def test_reasoning_fallback_when_content_empty(configured: None) -> None:
+    client = AsyncMock()
+    # Some Bedrock-routed responses return the answer in reasoning_content with empty content.
+    client.post.return_value = _response(
+        content='',
+    )
+    # Inject reasoning_content carrying the JSON the content field omitted.
+    body = client.post.return_value.json()
+    body['choices'][0]['message']['reasoning_content'] = 'Размышления: ответом будет JSON.\n' + _VALID_JSON
+    client.post.return_value = httpx.Response(200, json=body)
+
+    result = await OpenRouterSupportProvider(client=client).generate(_request(), Mock())
+
+    assert result.result.decision == 'answer'
 
 
 @pytest.mark.asyncio

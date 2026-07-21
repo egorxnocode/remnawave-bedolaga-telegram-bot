@@ -279,7 +279,12 @@ class OpenRouterSupportProvider(_AiSupportProviderBase):
             raise AiSupportProviderError('provider_truncated')
         if finish_reason == 'content_filter':
             raise AiSupportProviderError('provider_invalid_response')
-        content = (choice.get('message') or {}).get('content') or ''
+        message = choice.get('message') or {}
+        content = message.get('content') or ''
+        # Some OpenRouter upstreams (e.g. Amazon Bedrock) may return the answer
+        # in a reasoning field when content is empty; try it as a fallback.
+        if not content:
+            content = message.get('reasoning_content') or message.get('reasoning') or ''
         extracted = _extract_json_object(content)
         if extracted is None:
             raise AiSupportProviderError('provider_invalid_response')
@@ -319,6 +324,7 @@ class OpenRouterSupportProvider(_AiSupportProviderBase):
             ],
             'max_tokens': settings.AI_SUPPORT_PROVIDER_MAX_TOKENS,
             'temperature': 0,
+            'response_format': {'type': 'json_object'},
         }
 
 
