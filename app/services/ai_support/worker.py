@@ -33,9 +33,9 @@ from app.services.ai_support.knowledge import (
 )
 from app.services.ai_support.policy import assess_customer_message
 from app.services.ai_support.provider import (
+    AiSupportProvider,
     AiSupportProviderError,
-    AnthropicSupportProvider,
-    anthropic_support_provider,
+    ai_support_provider,
 )
 from app.services.ai_support.types import AiSupportDecision, AiSupportMode
 
@@ -62,7 +62,7 @@ class AiSupportWorker:
     def __init__(
         self,
         *,
-        provider: AnthropicSupportProvider = anthropic_support_provider,
+        provider: AiSupportProvider = ai_support_provider,
         context_collector: AiSupportDatabaseContextCollector = ai_support_database_context_collector,
         budget_guard: AiSupportBudgetGuard = ai_support_budget_guard,
         knowledge_loader: Callable[[], AiSupportKnowledgePackage] = load_ai_support_knowledge,

@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.services.ai_support.contracts import AiSupportContextBuilder, SafeCustomerContext
 from app.services.ai_support.knowledge import load_ai_support_knowledge
 from app.services.ai_support.policy import assess_customer_message
-from app.services.ai_support.provider import AnthropicSupportProvider
+from app.services.ai_support.provider import AiSupportProvider, get_ai_support_provider
 from app.services.ai_support.types import AiSupportDecision, AiSupportMode
 
 
@@ -94,7 +94,7 @@ def _bounded_int(value: Any) -> int | None:
 
 
 class AiSupportEvaluationRunner:
-    def __init__(self, *, provider: AnthropicSupportProvider, builder: AiSupportContextBuilder) -> None:
+    def __init__(self, *, provider: AiSupportProvider, builder: AiSupportContextBuilder) -> None:
         self._provider = provider
         self._builder = builder
 
@@ -171,7 +171,7 @@ async def _main(args: argparse.Namespace) -> int:
     if suite.kb_version != knowledge.kb_version:
         raise SystemExit('Evaluation and runtime KB versions differ')
     report = await AiSupportEvaluationRunner(
-        provider=AnthropicSupportProvider(),
+        provider=get_ai_support_provider(),
         builder=AiSupportContextBuilder(knowledge),
     ).run(suite, limit=args.limit)
     print(json.dumps(report, ensure_ascii=False, indent=2))

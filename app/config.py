@@ -65,8 +65,13 @@ class Settings(BaseSettings):
         max_length=64,
         pattern=r'^[a-z0-9][a-z0-9._-]*$',
     )
+    AI_SUPPORT_PROVIDER: Literal['anthropic', 'openrouter'] = 'anthropic'
+    AI_SUPPORT_PROVIDER_API_KEY: str = Field(default='', repr=False)
+    # Back-compat: the Anthropic adapter reads AI_SUPPORT_PROVIDER_API_KEY first,
+    # then falls back to this legacy variable.
     AI_SUPPORT_ANTHROPIC_API_KEY: str = Field(default='', repr=False)
-    AI_SUPPORT_MODEL_ID: str = Field(default='claude-haiku-4-5-20251001', pattern=r'^claude-[a-z0-9-]+$')
+    # Accepts Anthropic ids (claude-haiku-4-5-20251001) and OpenRouter slugs (anthropic/claude-haiku-4-5).
+    AI_SUPPORT_MODEL_ID: str = Field(default='claude-haiku-4-5-20251001', pattern=r'^[a-zA-Z0-9][a-zA-Z0-9._:/-]+$')
     AI_SUPPORT_PROVIDER_TIMEOUT_SECONDS: float = Field(default=15.0, ge=1.0, le=30.0)
     AI_SUPPORT_PROVIDER_MAX_CONCURRENCY: int = Field(default=2, ge=1, le=10)
     AI_SUPPORT_PROVIDER_MAX_TOKENS: int = Field(default=800, ge=128, le=2000)

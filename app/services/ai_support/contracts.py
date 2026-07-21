@@ -142,7 +142,7 @@ class AiSupportProviderResponse(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True)
 
     provider: str = Field(min_length=1, max_length=32, pattern=r'^[a-z0-9][a-z0-9_-]*$')
-    model_id: str = Field(min_length=1, max_length=128, pattern=r'^[a-zA-Z0-9][a-zA-Z0-9._:-]*$')
+    model_id: str = Field(min_length=1, max_length=128, pattern=r'^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$')
     latency_ms: int = Field(ge=0)
     usage: AiSupportProviderUsage = Field(default_factory=AiSupportProviderUsage)
     result: AiSupportProviderResult
