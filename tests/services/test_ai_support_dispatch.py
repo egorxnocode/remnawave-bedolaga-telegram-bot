@@ -54,6 +54,7 @@ async def test_off_mode_does_not_touch_database_or_queue(monkeypatch: pytest.Mon
 @pytest.mark.asyncio
 async def test_shadow_mode_enqueues_inside_savepoint(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, 'AI_SUPPORT_MODE', 'shadow')
+    monkeypatch.setattr(settings, 'AI_SUPPORT_ALLOWED_TICKET_IDS', '7')
     db = _db()
     message = SimpleNamespace(id=11)
     outcome = SimpleNamespace(job=SimpleNamespace(id=23), reason_code='created')
@@ -80,6 +81,7 @@ async def test_shadow_mode_enqueues_inside_savepoint(monkeypatch: pytest.MonkeyP
 @pytest.mark.asyncio
 async def test_queue_database_error_fails_open_for_human_support(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, 'AI_SUPPORT_MODE', 'shadow')
+    monkeypatch.setattr(settings, 'AI_SUPPORT_ALLOWED_TICKET_IDS', '7')
     db = _db()
     message = SimpleNamespace(id=11)
 
@@ -97,6 +99,34 @@ async def test_queue_database_error_fails_open_for_human_support(monkeypatch: py
     assert result.status is AiSupportDispatchStatus.ERROR
     assert result.reason_code == 'queue_error'
     db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('allowlist', ['', '8, 9'])
+async def test_shadow_mode_skips_ticket_outside_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+    allowlist: str,
+) -> None:
+    monkeypatch.setattr(settings, 'AI_SUPPORT_MODE', 'shadow')
+    monkeypatch.setattr(settings, 'AI_SUPPORT_ALLOWED_TICKET_IDS', allowlist)
+    db = _db()
+    message = SimpleNamespace(id=11)
+
+    with patch(
+        'app.services.ai_support.dispatch.AiSupportQueueCRUD.enqueue_if_eligible',
+        new_callable=AsyncMock,
+    ) as enqueue:
+        result = await AiSupportDispatchService().on_user_message(
+            db,
+            ticket_id=7,
+            message=message,
+            channel='cabinet',
+        )
+
+    assert result.status is AiSupportDispatchStatus.SKIPPED
+    assert result.reason_code == 'ticket_not_allowlisted'
+    db.flush.assert_not_awaited()
+    enqueue.assert_not_awaited()
 
 
 @pytest.mark.asyncio

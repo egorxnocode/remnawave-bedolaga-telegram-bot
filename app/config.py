@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # AI support is fail-closed. Only an explicit environment change may move
     # it to shadow/auto; the admin settings API does not expose this switch.
     AI_SUPPORT_MODE: Literal['off', 'shadow', 'auto'] = 'off'
+    AI_SUPPORT_ALLOWED_TICKET_IDS: str = Field(
+        default='',
+        pattern=r'^\s*(?:[1-9]\d*(?:\s*,\s*[1-9]\d*)*)?\s*$',
+    )
     AI_SUPPORT_WORKER_ENABLED: bool = False
     AI_SUPPORT_WORKER_POLL_SECONDS: float = Field(default=1.0, ge=0.1, le=60.0)
     AI_SUPPORT_WORKER_SHUTDOWN_SECONDS: float = Field(default=10.0, ge=1.0, le=60.0)
@@ -70,6 +74,15 @@ class Settings(BaseSettings):
     AI_SUPPORT_PROVIDER_CIRCUIT_FAILURES: int = Field(default=5, ge=1, le=20)
     AI_SUPPORT_PROVIDER_CIRCUIT_RESET_SECONDS: float = Field(default=60.0, ge=5.0, le=600.0)
     AI_SUPPORT_DAILY_TOKEN_BUDGET: int = Field(default=0, ge=0, le=10_000_000)
+
+    def get_ai_support_allowed_ticket_ids(self) -> frozenset[int]:
+        """Return the environment-only production canary allowlist."""
+        if not self.AI_SUPPORT_ALLOWED_TICKET_IDS.strip():
+            return frozenset()
+        return frozenset(int(value.strip()) for value in self.AI_SUPPORT_ALLOWED_TICKET_IDS.split(','))
+
+    def is_ai_support_ticket_allowed(self, ticket_id: int) -> bool:
+        return ticket_id in self.get_ai_support_allowed_ticket_ids()
 
     # MiniApp tickets settings
     MINIAPP_TICKETS_ENABLED: bool = True  # Enable/disable tickets section in miniapp

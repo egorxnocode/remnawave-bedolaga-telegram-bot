@@ -52,6 +52,8 @@ class AiSupportDispatchService:
     ) -> AiSupportDispatchResult:
         if self.mode() is AiSupportMode.OFF:
             return AiSupportDispatchResult(AiSupportDispatchStatus.DISABLED, 'mode_off')
+        if not settings.is_ai_support_ticket_allowed(ticket_id):
+            return AiSupportDispatchResult(AiSupportDispatchStatus.SKIPPED, 'ticket_not_allowlisted')
 
         await db.flush()
         message_id = message.id

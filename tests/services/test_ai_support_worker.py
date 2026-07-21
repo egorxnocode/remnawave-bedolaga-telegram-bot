@@ -17,6 +17,11 @@ from app.services.ai_support.contracts import (
 )
 
 
+@pytest.fixture(autouse=True)
+def allow_test_ticket(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, 'AI_SUPPORT_ALLOWED_TICKET_IDS', '7')
+
+
 def _result(message) -> MagicMock:
     result = MagicMock()
     result.scalar_one_or_none.return_value = message
@@ -103,6 +108,35 @@ async def test_empty_queue_is_idle(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.status is AiSupportWorkerStatus.IDLE
     assert result.reason_codes == ('queue_empty',)
     db.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_claimed_job_outside_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, 'AI_SUPPORT_MODE', 'shadow')
+    monkeypatch.setattr(settings, 'AI_SUPPORT_ALLOWED_TICKET_IDS', '')
+    job = SimpleNamespace(id=19, ticket_id=7, trigger_message_id=11)
+    db = _db(None)
+    worker, generate = _eligible_worker(budget_allowed=True, provider_response=_provider_response())
+
+    with (
+        patch(
+            'app.services.ai_support.worker.AiSupportQueueCRUD.claim_next',
+            new=AsyncMock(return_value=job),
+        ),
+        patch(
+            'app.services.ai_support.worker.AiSupportQueueCRUD.mark_escalated',
+            new_callable=AsyncMock,
+        ) as escalate,
+    ):
+        result = await worker.process_next(db)
+
+    assert result.status is AiSupportWorkerStatus.ESCALATED
+    assert result.reason_codes == ('ticket_not_allowlisted',)
+    assert db.add.call_args.args[0].decision == AiSupportRunDecision.ABSTAIN.value
+    generate.assert_not_awaited()
+    escalate.assert_awaited_once()
 
 
 @pytest.mark.asyncio

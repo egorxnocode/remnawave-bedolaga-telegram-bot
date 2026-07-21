@@ -16,12 +16,27 @@ from app.services.ai_support import (
 def test_settings_default_to_off() -> None:
     candidate = Settings(BOT_TOKEN='test')
     assert candidate.AI_SUPPORT_MODE == 'off'
+    assert candidate.get_ai_support_allowed_ticket_ids() == frozenset()
     assert candidate.AI_SUPPORT_WORKER_ENABLED is False
 
 
 def test_settings_reject_unknown_mode() -> None:
     with pytest.raises(ValidationError):
         Settings(BOT_TOKEN='test', AI_SUPPORT_MODE='enabled')
+
+
+def test_settings_parse_ticket_allowlist() -> None:
+    candidate = Settings(BOT_TOKEN='test', AI_SUPPORT_ALLOWED_TICKET_IDS=' 7, 9, 7 ')
+
+    assert candidate.get_ai_support_allowed_ticket_ids() == frozenset({7, 9})
+    assert candidate.is_ai_support_ticket_allowed(7) is True
+    assert candidate.is_ai_support_ticket_allowed(8) is False
+
+
+@pytest.mark.parametrize('value', ['0', '-1', '7,,9', 'ticket-7', '7 9'])
+def test_settings_reject_unsafe_ticket_allowlist(value: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings(BOT_TOKEN='test', AI_SUPPORT_ALLOWED_TICKET_IDS=value)
 
 
 @pytest.mark.parametrize(

@@ -85,6 +85,17 @@ class AiSupportWorker:
         if job is None:
             return AiSupportWorkerResult(AiSupportWorkerStatus.IDLE, ('queue_empty',))
 
+        started_at = datetime.now(UTC)
+        if not settings.is_ai_support_ticket_allowed(job.ticket_id):
+            return await self._escalate(
+                db,
+                job=job,
+                decision=AiSupportRunDecision.ABSTAIN.value,
+                reason_codes=('ticket_not_allowlisted',),
+                status=AiSupportWorkerStatus.ESCALATED,
+                started_at=started_at,
+            )
+
         message_result = await db.execute(select(TicketMessage).where(TicketMessage.id == job.trigger_message_id))
         message = message_result.scalar_one_or_none()
         if message is None:
@@ -95,7 +106,6 @@ class AiSupportWorker:
             message.message_text,
             has_media=message.has_media,
         )
-        started_at = datetime.now(UTC)
         if assessment.decision is AiSupportDecision.ESCALATE:
             return await self._escalate(
                 db,
