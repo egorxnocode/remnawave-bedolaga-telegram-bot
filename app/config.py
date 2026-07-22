@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     AI_SUPPORT_WORKER_POLL_SECONDS: float = Field(default=1.0, ge=0.1, le=60.0)
     AI_SUPPORT_WORKER_SHUTDOWN_SECONDS: float = Field(default=10.0, ge=1.0, le=60.0)
     AI_SUPPORT_PROMPT_VERSION: str = Field(
-        default='support-v2',
+        default='support-v3',
         min_length=1,
         max_length=64,
         pattern=r'^[a-z0-9][a-z0-9._-]*$',
