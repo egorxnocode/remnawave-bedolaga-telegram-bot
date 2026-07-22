@@ -33,6 +33,22 @@ def test_settings_parse_ticket_allowlist() -> None:
     assert candidate.is_ai_support_ticket_allowed(8) is False
 
 
+def test_settings_allow_all_tickets_via_star() -> None:
+    candidate = Settings(BOT_TOKEN='test', AI_SUPPORT_ALLOWED_TICKET_IDS='*')
+
+    assert candidate.is_ai_support_allow_all() is True
+    assert candidate.get_ai_support_allowed_ticket_ids() == frozenset()
+    assert candidate.is_ai_support_ticket_allowed(7) is True
+    assert candidate.is_ai_support_ticket_allowed(999) is True
+
+
+def test_settings_empty_allowlist_is_not_allow_all() -> None:
+    candidate = Settings(BOT_TOKEN='test')
+
+    assert candidate.is_ai_support_allow_all() is False
+    assert candidate.is_ai_support_ticket_allowed(7) is False
+
+
 @pytest.mark.parametrize('value', ['0', '-1', '7,,9', 'ticket-7', '7 9'])
 def test_settings_reject_unsafe_ticket_allowlist(value: str) -> None:
     with pytest.raises(ValidationError):

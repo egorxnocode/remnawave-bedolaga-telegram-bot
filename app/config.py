@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     AI_SUPPORT_MODE: Literal['off', 'shadow', 'auto'] = 'off'
     AI_SUPPORT_ALLOWED_TICKET_IDS: str = Field(
         default='',
-        pattern=r'^\s*(?:[1-9]\d*(?:\s*,\s*[1-9]\d*)*)?\s*$',
+        pattern=r'^\s*(?:\*|[1-9]\d*(?:\s*,\s*[1-9]\d*)*)?\s*$',
     )
     AI_SUPPORT_WORKER_ENABLED: bool = False
     AI_SUPPORT_WORKER_POLL_SECONDS: float = Field(default=1.0, ge=0.1, le=60.0)
@@ -81,12 +81,23 @@ class Settings(BaseSettings):
     AI_SUPPORT_DAILY_TOKEN_BUDGET: int = Field(default=0, ge=0, le=10_000_000)
 
     def get_ai_support_allowed_ticket_ids(self) -> frozenset[int]:
-        """Return the environment-only production canary allowlist."""
-        if not self.AI_SUPPORT_ALLOWED_TICKET_IDS.strip():
+        """Return the environment-only production canary allowlist.
+
+        Empty or ``*`` returns an empty set; use ``is_ai_support_allow_all`` to
+        distinguish "all tickets" (``*``) from "no tickets" (empty).
+        """
+        raw = self.AI_SUPPORT_ALLOWED_TICKET_IDS.strip()
+        if not raw or raw == '*':
             return frozenset()
-        return frozenset(int(value.strip()) for value in self.AI_SUPPORT_ALLOWED_TICKET_IDS.split(','))
+        return frozenset(int(value.strip()) for value in raw.split(','))
+
+    def is_ai_support_allow_all(self) -> bool:
+        """True when every ticket is eligible for AI support (``AI_SUPPORT_ALLOWED_TICKET_IDS=*``)."""
+        return self.AI_SUPPORT_ALLOWED_TICKET_IDS.strip() == '*'
 
     def is_ai_support_ticket_allowed(self, ticket_id: int) -> bool:
+        if self.is_ai_support_allow_all():
+            return True
         return ticket_id in self.get_ai_support_allowed_ticket_ids()
 
     # MiniApp tickets settings
