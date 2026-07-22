@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config import settings
-from app.database.models import AiSupportRun, AiSupportRunDecision
+from app.database.models import AiSupportRun, AiSupportRunDecision, TicketMessage
 from app.services.ai_support import AiSupportWorker, AiSupportWorkerStatus
 from app.services.ai_support.budget import AiSupportBudgetDecision
 from app.services.ai_support.contracts import (
@@ -291,3 +291,147 @@ async def test_provider_escalation_creates_no_draft(monkeypatch: pytest.MonkeyPa
     assert db.add.call_args.args[0].decision == AiSupportRunDecision.ESCALATE.value
     create_draft.assert_not_awaited()
     escalate.assert_awaited_once()
+
+
+def _ticket_snapshot() -> SimpleNamespace:
+    return SimpleNamespace(id=7, status='open', user_id=123, updated_at=None)
+
+
+def _auto_db(message: SimpleNamespace, ticket: SimpleNamespace) -> SimpleNamespace:
+    """Fake session whose execute() yields the trigger message, then the ticket."""
+    db = SimpleNamespace(
+        add=MagicMock(),
+        execute=AsyncMock(side_effect=[_result(message), _result(ticket)]),
+        flush=AsyncMock(),
+        commit=AsyncMock(),
+    )
+
+    async def assign_run_id() -> None:
+        if db.add.call_args:
+            db.add.call_args.args[0].id = 31
+
+    db.flush.side_effect = assign_run_id
+    return db
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_delivers_answer_to_customer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, 'AI_SUPPORT_MODE', 'auto')
+    monkeypatch.setattr(settings, 'AI_SUPPORT_AUTO_DELIVERY_ENABLED', True)
+    job = SimpleNamespace(id=19, ticket_id=7, trigger_message_id=11)
+    message = SimpleNamespace(message_text='Как подключить телефон?', has_media=False)
+    ticket = _ticket_snapshot()
+    db = _auto_db(message, ticket)
+    worker, generate = _eligible_worker(budget_allowed=True, provider_response=_provider_response())
+    draft = SimpleNamespace(id=42)
+
+    with (
+        patch('app.services.ai_support.worker.AiSupportQueueCRUD.claim_next', new=AsyncMock(return_value=job)),
+        patch(
+            'app.services.ai_support.worker.AiSupportQueueCRUD.lock_ticket_for_ai_delivery',
+            new=AsyncMock(return_value=True),
+        ),
+        patch('app.services.ai_support.worker.AiSupportQueueCRUD.mark_completed', new_callable=AsyncMock),
+        patch('app.services.ai_support.worker.AiSupportDraftCRUD.create', new=AsyncMock(return_value=draft)),
+        patch(
+            'app.services.ai_support.worker.AiSupportDraftCRUD.mark_auto_accepted',
+            new_callable=AsyncMock,
+        ) as auto_accept,
+        patch.object(AiSupportWorker, '_record_last_run', new_callable=AsyncMock),
+    ):
+        result = await worker.process_next(db)
+
+    assert result.status is AiSupportWorkerStatus.DELIVERED
+    assert result.delivery == {
+        'ticket_id': 7,
+        'answer_text': 'Откройте приложение и добавьте подписку.',
+        'run_id': 31,
+    }
+    # The AI-authored customer message was persisted.
+    messages = [call.args[0] for call in db.add.call_args_list]
+    assert any(isinstance(m, TicketMessage) for m in messages)
+    ai_message = next(m for m in messages if isinstance(m, TicketMessage))
+    assert ai_message.ticket_id == 7
+    assert ai_message.user_id is None
+    assert ai_message.is_from_admin is True
+    assert ai_message.author_kind == 'ai'
+    assert ai_message.ai_run_id == 31
+    assert ai_message.message_text == 'Откройте приложение и добавьте подписку.'
+    # Ticket answered, draft auto-accepted.
+    assert ticket.status == 'answered'
+    auto_accept.assert_awaited_once_with(
+        db,
+        ticket_id=7,
+        draft_id=42,
+        answer_text='Откройте приложение и добавьте подписку.',
+        now=ai_message.created_at,
+    )
+    generate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_auto_kill_switch_off_creates_draft_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, 'AI_SUPPORT_MODE', 'auto')
+    monkeypatch.setattr(settings, 'AI_SUPPORT_AUTO_DELIVERY_ENABLED', False)
+    job = SimpleNamespace(id=19, ticket_id=7, trigger_message_id=11)
+    message = SimpleNamespace(message_text='Как подключить телефон?', has_media=False)
+    db = _db(message)
+    worker, generate = _eligible_worker(budget_allowed=True, provider_response=_provider_response())
+
+    with (
+        patch('app.services.ai_support.worker.AiSupportQueueCRUD.claim_next', new=AsyncMock(return_value=job)),
+        patch(
+            'app.services.ai_support.worker.AiSupportQueueCRUD.lock_ticket_for_ai_delivery',
+            new=AsyncMock(return_value=True),
+        ),
+        patch('app.services.ai_support.worker.AiSupportQueueCRUD.mark_completed', new_callable=AsyncMock),
+        patch('app.services.ai_support.worker.AiSupportDraftCRUD.create', new_callable=AsyncMock),
+        patch(
+            'app.services.ai_support.worker.AiSupportDraftCRUD.mark_auto_accepted',
+            new_callable=AsyncMock,
+        ) as auto_accept,
+    ):
+        result = await worker.process_next(db)
+
+    assert result.status is AiSupportWorkerStatus.DRAFT_CREATED
+    assert result.delivery is None
+    auto_accept.assert_not_awaited()
+    assert all(not isinstance(item, TicketMessage) for item in (call.args[0] for call in db.add.call_args_list))
+    generate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_auto_human_takeover_race_escalates_without_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, 'AI_SUPPORT_MODE', 'auto')
+    monkeypatch.setattr(settings, 'AI_SUPPORT_AUTO_DELIVERY_ENABLED', True)
+    job = SimpleNamespace(id=19, ticket_id=7, trigger_message_id=11)
+    message = SimpleNamespace(message_text='Как подключить телефон?', has_media=False)
+    db = _db(message)
+    worker, generate = _eligible_worker(budget_allowed=True, provider_response=_provider_response())
+
+    # First lock (before draft) succeeds; second lock (before delivery) fails -> human took over.
+    lock = AsyncMock(side_effect=[True, False])
+    with (
+        patch('app.services.ai_support.worker.AiSupportQueueCRUD.claim_next', new=AsyncMock(return_value=job)),
+        patch('app.services.ai_support.worker.AiSupportQueueCRUD.lock_ticket_for_ai_delivery', new=lock),
+        patch('app.services.ai_support.worker.AiSupportQueueCRUD.mark_completed', new_callable=AsyncMock),
+        patch('app.services.ai_support.worker.AiSupportDraftCRUD.create', new_callable=AsyncMock),
+        patch(
+            'app.services.ai_support.worker.AiSupportDraftCRUD.mark_auto_accepted',
+            new_callable=AsyncMock,
+        ) as auto_accept,
+        patch(
+            'app.services.ai_support.worker.AiSupportQueueCRUD.mark_escalated',
+            new_callable=AsyncMock,
+        ) as escalate,
+    ):
+        result = await worker.process_next(db)
+
+    assert result.status is AiSupportWorkerStatus.ESCALATED
+    assert result.delivery is None
+    auto_accept.assert_not_awaited()
+    assert all(not isinstance(item, TicketMessage) for item in (call.args[0] for call in db.add.call_args_list))
+    escalate.assert_awaited_once()
+    generate.assert_awaited_once()

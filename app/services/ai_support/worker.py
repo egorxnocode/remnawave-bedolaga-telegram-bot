@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 
+import structlog
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,7 +18,10 @@ from app.database.models import (
     AiSupportRun,
     AiSupportRunDecision,
     AiSupportTicketState,
+    Ticket,
     TicketMessage,
+    TicketMessageAuthorKind,
+    TicketStatus,
 )
 from app.services.ai_support.budget import AiSupportBudgetGuard, ai_support_budget_guard
 from app.services.ai_support.context import (
@@ -40,12 +44,16 @@ from app.services.ai_support.provider import (
 from app.services.ai_support.types import AiSupportDecision, AiSupportMode
 
 
+logger = structlog.get_logger(__name__)
+
+
 class AiSupportWorkerStatus(StrEnum):
     DISABLED = 'disabled'
     IDLE = 'idle'
     ESCALATED = 'escalated'
     PROVIDER_UNAVAILABLE = 'provider_unavailable'
     DRAFT_CREATED = 'draft_created'
+    DELIVERED = 'delivered'
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,10 +62,18 @@ class AiSupportWorkerResult:
     reason_codes: tuple[str, ...]
     job_id: int | None = None
     run_id: int | None = None
+    # Present only for DELIVERED: post-commit customer notification payload.
+    delivery: dict[str, int | str] | None = None
 
 
 class AiSupportWorker:
-    """Claim one job and persist, but never deliver, a validated answer."""
+    """Claim one job and persist a validated answer.
+
+    In shadow mode the answer is an operator-only draft. In auto mode (with the
+    independent AI_SUPPORT_AUTO_DELIVERY_ENABLED kill-switch on) the answer is
+    also posted to the ticket as an AI-authored message for the customer; any
+    safety or takeover failure leaves a draft for the operator and never replies.
+    """
 
     def __init__(
         self,
@@ -214,7 +230,7 @@ class AiSupportWorker:
         )
         db.add(run)
         await db.flush()
-        await AiSupportDraftCRUD.create(
+        draft = await AiSupportDraftCRUD.create(
             db,
             run_id=run.id,
             ticket_id=job.ticket_id,
@@ -223,6 +239,30 @@ class AiSupportWorker:
             citations=result.citations,
             now=completed_at,
         )
+        if mode is AiSupportMode.AUTO and settings.AI_SUPPORT_AUTO_DELIVERY_ENABLED:
+            if not await AiSupportQueueCRUD.lock_ticket_for_ai_delivery(db, ticket_id=job.ticket_id):
+                # A human took over between generation and delivery: keep the draft
+                # for the operator, do not reply to the customer.
+                return await self._escalate(
+                    db,
+                    job=job,
+                    decision=AiSupportRunDecision.ANSWER.value,
+                    reason_codes=(*reason_codes, 'human_takeover'),
+                    status=AiSupportWorkerStatus.ESCALATED,
+                    started_at=started_at,
+                    provider_response=response,
+                )
+            return await self._deliver_answer(
+                db,
+                job=job,
+                run=run,
+                draft=draft,
+                answer_text=result.answer_text,
+                reason_codes=reason_codes,
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+
         await AiSupportQueueCRUD.mark_completed(db, job, now=completed_at)
         await self._record_last_run(db, job.ticket_id, run.id, completed_at)
         return AiSupportWorkerResult(
@@ -230,6 +270,64 @@ class AiSupportWorker:
             reason_codes,
             job_id=job.id,
             run_id=run.id,
+        )
+
+    async def _deliver_answer(
+        self,
+        db: AsyncSession,
+        *,
+        job,
+        run: AiSupportRun,
+        draft,
+        answer_text: str,
+        reason_codes: tuple[str, ...],
+        started_at: datetime,
+        completed_at: datetime,
+    ) -> AiSupportWorkerResult:
+        """Post the validated answer to the ticket as an AI-authored customer reply."""
+        ticket_result = await db.execute(select(Ticket).where(Ticket.id == job.ticket_id))
+        ticket = ticket_result.scalar_one_or_none()
+        if ticket is None:
+            return await self._escalate(
+                db,
+                job=job,
+                decision=AiSupportRunDecision.ANSWER.value,
+                reason_codes=reason_codes,
+                status=AiSupportWorkerStatus.ESCALATED,
+                started_at=started_at,
+            )
+        message = TicketMessage(
+            ticket_id=job.ticket_id,
+            user_id=None,
+            is_from_admin=True,
+            author_kind=TicketMessageAuthorKind.AI.value,
+            message_text=answer_text,
+            ai_run_id=run.id,
+            created_at=completed_at,
+        )
+        db.add(message)
+        ticket.status = TicketStatus.ANSWERED.value
+        ticket.updated_at = completed_at
+        await AiSupportDraftCRUD.mark_auto_accepted(
+            db,
+            ticket_id=job.ticket_id,
+            draft_id=draft.id,
+            answer_text=answer_text,
+            now=completed_at,
+        )
+        await AiSupportQueueCRUD.mark_completed(db, job, now=completed_at)
+        await self._record_last_run(db, job.ticket_id, run.id, completed_at)
+        logger.info('AI support auto-delivered answer', ticket_id=job.ticket_id, run_id=run.id)
+        return AiSupportWorkerResult(
+            AiSupportWorkerStatus.DELIVERED,
+            reason_codes,
+            job_id=job.id,
+            run_id=run.id,
+            delivery={
+                'ticket_id': job.ticket_id,
+                'answer_text': answer_text,
+                'run_id': run.id,
+            },
         )
 
     async def _escalate(

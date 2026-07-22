@@ -134,10 +134,13 @@ class AiSupportWorkerRunner:
                     AiSupportWorkerStatus.ESCALATED,
                     AiSupportWorkerStatus.PROVIDER_UNAVAILABLE,
                     AiSupportWorkerStatus.DRAFT_CREATED,
+                    AiSupportWorkerStatus.DELIVERED,
                 }:
                     await db.commit()
                 else:
                     await db.rollback()
+                if result.delivery is not None:
+                    await deliver_ai_answer(db, result.delivery)
                 return result
             except BaseException:
                 await db.rollback()
@@ -217,3 +220,64 @@ class AiSupportWorkerRunner:
 
 
 ai_support_worker_runner = AiSupportWorkerRunner()
+
+
+async def deliver_ai_answer(db: AsyncSession, delivery: dict[str, int | str]) -> None:
+    """Best-effort customer notification after an AI answer is committed to a ticket.
+
+    The TicketMessage is the source of truth (already committed); Telegram/cabinet
+    notifications are side-effects and must never fail the worker cycle.
+    """
+    ticket_id = int(delivery['ticket_id'])
+    answer_text = str(delivery['answer_text'])
+    try:
+        from app.database.crud.ticket import TicketCRUD
+
+        ticket = await TicketCRUD.get_ticket_by_id(db, ticket_id, load_messages=False, load_user=True)
+    except Exception as error:
+        logger.error('AI delivery: ticket load failed', ticket_id=ticket_id, error=str(error))
+        return
+    if ticket is None:
+        logger.warning('AI delivery: ticket not found', ticket_id=ticket_id)
+        return
+    # Telegram notification (best-effort)
+    try:
+        from app.bot_factory import create_bot
+        from app.handlers.admin.tickets import notify_user_about_ticket_reply
+
+        bot = create_bot()
+        try:
+            await notify_user_about_ticket_reply(bot, ticket, answer_text, db)
+        finally:
+            await bot.session.close()
+    except Exception as error:
+        logger.warning('AI delivery: telegram notify failed', ticket_id=ticket_id, error=str(error))
+    # Cabinet notification + WebSocket (best-effort)
+    try:
+        from app.cabinet.routes.websocket import notify_user_ticket_reply
+        from app.database.crud.ticket_notification import TicketNotificationCRUD
+
+        notification = await TicketNotificationCRUD.create_user_notification_for_admin_reply(db, ticket, answer_text)
+        if notification and getattr(ticket, 'user_id', None) is not None:
+            await notify_user_ticket_reply(ticket.user_id, ticket.id, answer_text[:100])
+    except Exception as error:
+        logger.warning('AI delivery: cabinet notify failed', ticket_id=ticket_id, error=str(error))
+    # Event emitter (best-effort)
+    try:
+        from app.services.event_emitter import event_emitter
+
+        await event_emitter.emit(
+            'ticket.message_added',
+            {
+                'ticket_id': ticket_id,
+                'message_id': None,
+                'user_id': None,
+                'is_from_admin': True,
+                'message_text': answer_text[:200],
+                'has_media': False,
+                'status': 'answered',
+            },
+            db=db,
+        )
+    except Exception as error:
+        logger.warning('AI delivery: event emit failed', ticket_id=ticket_id, error=str(error))

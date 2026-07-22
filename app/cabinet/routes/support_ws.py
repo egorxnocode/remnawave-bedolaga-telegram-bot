@@ -644,7 +644,9 @@ def _message_snapshot(message: TicketMessage) -> dict[str, Any]:
     return {
         'id': str(message.id),
         'ticketId': str(message.ticket_id),
-        'authorUserId': str(message.user_id),
+        # AI-authored messages have no user author (user_id is null); emit None
+        # instead of the string "None" so the frontend does not display it.
+        'authorUserId': str(message.user_id) if message.user_id is not None else None,
         'isFromAdmin': bool(message.is_from_admin),
         'body': message.message_text or '',
         'attachments': _media_items_from_message(message),

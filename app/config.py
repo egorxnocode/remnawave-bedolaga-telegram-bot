@@ -51,6 +51,9 @@ class Settings(BaseSettings):
         pattern=r'^\s*(?:\*|[1-9]\d*(?:\s*,\s*[1-9]\d*)*)?\s*$',
     )
     AI_SUPPORT_WORKER_ENABLED: bool = False
+    # Independent kill-switch for auto-delivery (MODE=auto). When false, auto mode
+    # behaves like shadow (drafts only, no customer reply). Environment-only.
+    AI_SUPPORT_AUTO_DELIVERY_ENABLED: bool = False
     AI_SUPPORT_WORKER_POLL_SECONDS: float = Field(default=1.0, ge=0.1, le=60.0)
     AI_SUPPORT_WORKER_SHUTDOWN_SECONDS: float = Field(default=10.0, ge=1.0, le=60.0)
     AI_SUPPORT_PROMPT_VERSION: str = Field(

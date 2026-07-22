@@ -106,6 +106,39 @@ class AiSupportDraftCRUD:
         return draft
 
     @staticmethod
+    async def mark_auto_accepted(
+        db: AsyncSession,
+        *,
+        ticket_id: int,
+        draft_id: int,
+        answer_text: str,
+        now: datetime | None = None,
+    ) -> AiSupportDraft:
+        """Mark a draft ACCEPTED by the AI auto-delivery path (no human reviewer)."""
+        result = await db.execute(
+            select(AiSupportDraft)
+            .where(AiSupportDraft.id == draft_id, AiSupportDraft.ticket_id == ticket_id)
+            .with_for_update()
+        )
+        draft = result.scalar_one_or_none()
+        if draft is None:
+            raise AiSupportDraftConflictError('draft not found for ticket')
+        if draft.status != AiSupportDraftStatus.PENDING.value:
+            raise AiSupportDraftConflictError('draft is no longer pending')
+        final_text = answer_text.strip()
+        if not final_text or len(final_text) > 2000:
+            raise ValueError('answer_text must contain 1..2000 characters')
+        current = now or datetime.now(UTC)
+        draft.reviewed_text = final_text
+        draft.status = AiSupportDraftStatus.ACCEPTED.value
+        draft.reviewed_by_user_id = None
+        draft.reviewed_at = current
+        draft.review_reason = 'auto_delivered'
+        draft.updated_at = current
+        await db.flush()
+        return draft
+
+    @staticmethod
     async def supersede_pending(db: AsyncSession, *, ticket_id: int, now: datetime | None = None) -> int:
         result = await db.execute(
             update(AiSupportDraft)
