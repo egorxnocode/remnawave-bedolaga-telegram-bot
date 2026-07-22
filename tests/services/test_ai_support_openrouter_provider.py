@@ -215,3 +215,21 @@ async def test_model_slug_with_slash_is_recorded_without_mismatch(configured: No
 
     assert result.model_id == 'anthropic/claude-haiku-4-5-20251001'
     assert result.provider == 'openrouter'
+
+
+@pytest.mark.asyncio
+async def test_citation_suffix_is_normalized(configured: None) -> None:
+    client = AsyncMock()
+    # The model annotates the section id with a free-form suffix after ':'; the adapter
+    # keeps only the leading section-id token so the result validator accepts it.
+    arguments = (
+        '{"contract_version":1,"decision":"answer",'
+        '"answer_text":"Семейный на год — 2399 ₽, до 5 устройств.",'
+        '"citations":["TARIFFS: Семейный — 365 дней — 2399 ₽; до 5 устройств"],"reason_codes":[]}'
+    )
+    client.post.return_value = _response(arguments=arguments)
+
+    result = await OpenRouterSupportProvider(client=client).generate(_request(), Mock())
+
+    assert result.result.decision == 'answer'
+    assert result.result.citations == ('TARIFFS',)
