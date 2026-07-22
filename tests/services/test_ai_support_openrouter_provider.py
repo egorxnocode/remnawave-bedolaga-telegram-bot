@@ -42,9 +42,19 @@ def _response(
     status: int = 200,
     *,
     model: str = 'anthropic/claude-haiku-4-5',
-    finish_reason: str | None = 'stop',
-    content: str = _VALID_JSON,
+    finish_reason: str | None = 'tool_calls',
+    arguments: str = _VALID_JSON,
+    with_tool_call: bool = True,
 ) -> httpx.Response:
+    message: dict = {'role': 'assistant', 'content': None}
+    if with_tool_call:
+        message['tool_calls'] = [
+            {
+                'id': 'call_1',
+                'type': 'function',
+                'function': {'name': 'submit_support_result', 'arguments': arguments},
+            }
+        ]
     return httpx.Response(
         status,
         json={
@@ -54,7 +64,7 @@ def _response(
             'choices': [
                 {
                     'index': 0,
-                    'message': {'role': 'assistant', 'content': content},
+                    'message': message,
                     'finish_reason': finish_reason,
                 }
             ],
@@ -84,7 +94,7 @@ async def test_not_configured_never_calls_network(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
-async def test_success_uses_bearer_auth_and_prompt_json(configured: None) -> None:
+async def test_success_uses_bearer_auth_and_tool_call(configured: None) -> None:
     client = AsyncMock()
     client.post.return_value = _response()
     validator = Mock()
@@ -104,27 +114,12 @@ async def test_success_uses_bearer_auth_and_prompt_json(configured: None) -> Non
     assert call.kwargs['headers']['Authorization'] == 'Bearer test-or-secret'
     assert 'test-or-secret' not in str(call.kwargs['json'])
     assert 'output_config' not in call.kwargs['json']
-    assert call.kwargs['json']['response_format'] == {'type': 'json_object'}
+    assert 'response_format' not in call.kwargs['json']
+    assert call.kwargs['json']['tool_choice'] == {'type': 'function', 'function': {'name': 'submit_support_result'}}
+    assert call.kwargs['json']['tools'][0]['function']['name'] == 'submit_support_result'
     assert call.kwargs['json']['messages'][0]['role'] == 'system'
     assert call.kwargs['json']['messages'][1]['role'] == 'user'
     assert call.kwargs['json']['model'] == 'anthropic/claude-haiku-4-5'
-
-
-@pytest.mark.asyncio
-async def test_reasoning_fallback_when_content_empty(configured: None) -> None:
-    client = AsyncMock()
-    # Some Bedrock-routed responses return the answer in reasoning_content with empty content.
-    client.post.return_value = _response(
-        content='',
-    )
-    # Inject reasoning_content carrying the JSON the content field omitted.
-    body = client.post.return_value.json()
-    body['choices'][0]['message']['reasoning_content'] = 'Размышления: ответом будет JSON.\n' + _VALID_JSON
-    client.post.return_value = httpx.Response(200, json=body)
-
-    result = await OpenRouterSupportProvider(client=client).generate(_request(), Mock())
-
-    assert result.result.decision == 'answer'
 
 
 @pytest.mark.asyncio
@@ -180,19 +175,20 @@ async def test_truncation_fail_closed(configured: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_fenced_json_is_extracted(configured: None) -> None:
+async def test_missing_tool_call_fail_closed(configured: None) -> None:
     client = AsyncMock()
-    client.post.return_value = _response(content='```json\n' + _VALID_JSON + '\n```')
+    # 200 but no tool_calls (model ignored the forced tool_choice) — fail closed.
+    client.post.return_value = _response(with_tool_call=False, finish_reason='stop')
 
-    result = await OpenRouterSupportProvider(client=client).generate(_request(), Mock())
-
-    assert result.result.decision == 'answer'
+    with pytest.raises(AiSupportProviderError, match='provider_invalid_response'):
+        await OpenRouterSupportProvider(client=client).generate(_request(), Mock())
 
 
 @pytest.mark.asyncio
-async def test_invalid_json_fail_closed(configured: None) -> None:
+async def test_invalid_tool_arguments_fail_closed(configured: None) -> None:
     client = AsyncMock()
-    client.post.return_value = _response(content='Извините, я не могу помочь с этим вопросом.')
+    # Tool call present but arguments are not schema-conforming JSON.
+    client.post.return_value = _response(arguments='{"decision":"answer"}')  # missing required answer_text/citations
 
     with pytest.raises(AiSupportProviderError, match='provider_invalid_response'):
         await OpenRouterSupportProvider(client=client).generate(_request(), Mock())
