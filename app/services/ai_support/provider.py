@@ -317,9 +317,16 @@ class OpenRouterSupportProvider(_AiSupportProviderBase):
         # Models sometimes annotate a section id with a free-form suffix after ':' or
         # whitespace (e.g. "TARIFFS: Семейный — 2399 ₽"). Keep only the leading section-id
         # token so the result validator's SECTION_ID_RE accepts it.
-        citations = raw.get('citations') if isinstance(raw, dict) else None
+        if not isinstance(raw, dict):
+            raise AiSupportProviderError('provider_invalid_response')
+        citations = raw.get('citations')
         if isinstance(citations, list):
             raw['citations'] = [_normalize_citation(c) for c in citations if isinstance(c, str)]
+        # Models often omit contract_version or send null for reason_codes; fill
+        # defaults so Pydantic validation (Literal[1], tuple) does not reject.
+        raw.setdefault('contract_version', 1)
+        if raw.get('reason_codes') is None:
+            raw['reason_codes'] = []
         result = AiSupportProviderResult.model_validate(raw)
         usage = body.get('usage') or {}
         return AiSupportProviderResponse(
