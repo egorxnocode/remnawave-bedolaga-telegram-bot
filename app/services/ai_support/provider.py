@@ -332,6 +332,10 @@ class OpenRouterSupportProvider(_AiSupportProviderBase):
         raw.setdefault('contract_version', 1)
         if raw.get('reason_codes') is None:
             raw['reason_codes'] = []
+        # Models often include answer_text when escalating (e.g. "передам специалисту").
+        # The result validator forbids answer_text on escalate, so drop it.
+        if raw.get('decision') == 'escalate':
+            raw['answer_text'] = None
         try:
             result = AiSupportProviderResult.model_validate(raw)
         except Exception as error:
