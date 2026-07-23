@@ -16,6 +16,8 @@ from time import monotonic
 from typing import Protocol
 
 import httpx
+import structlog
+from pydantic import ValidationError
 
 from app.config import settings
 from app.services.ai_support.contracts import (
@@ -26,6 +28,9 @@ from app.services.ai_support.contracts import (
     AiSupportProviderResult,
     AiSupportProviderUsage,
 )
+
+
+logger = structlog.get_logger(__name__)
 
 
 class AiSupportProviderError(RuntimeError):
@@ -143,7 +148,7 @@ class _AiSupportProviderBase(abc.ABC):
                 last_error.__cause__ = error
             except AiSupportProviderError as error:
                 last_error = error
-            except (AiSupportContractError, KeyError, TypeError, ValueError) as error:
+            except (AiSupportContractError, KeyError, TypeError, ValueError, ValidationError) as error:
                 last_error = AiSupportProviderError('provider_invalid_response')
                 last_error.__cause__ = error
 
@@ -327,7 +332,22 @@ class OpenRouterSupportProvider(_AiSupportProviderBase):
         raw.setdefault('contract_version', 1)
         if raw.get('reason_codes') is None:
             raw['reason_codes'] = []
-        result = AiSupportProviderResult.model_validate(raw)
+        try:
+            result = AiSupportProviderResult.model_validate(raw)
+        except Exception as error:
+            logger.warning(
+                'AI support result validation failed',
+                raw_keys=list(raw.keys()) if isinstance(raw, dict) else None,
+                decision=raw.get('decision') if isinstance(raw, dict) else None,
+                answer_text_len=len(raw.get('answer_text') or '') if isinstance(raw, dict) else None,
+                citations=raw.get('citations') if isinstance(raw, dict) else None,
+                contract_version=raw.get('contract_version') if isinstance(raw, dict) else None,
+                reason_codes=raw.get('reason_codes') if isinstance(raw, dict) else None,
+                finish_reason=finish_reason,
+                error_type=type(error).__name__,
+                error_msg=str(error)[:400],
+            )
+            raise
         usage = body.get('usage') or {}
         return AiSupportProviderResponse(
             provider='openrouter',
