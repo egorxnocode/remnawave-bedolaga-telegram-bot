@@ -45,8 +45,9 @@ def _response(
     finish_reason: str | None = 'tool_calls',
     arguments: str = _VALID_JSON,
     with_tool_call: bool = True,
+    content: str | None = None,
 ) -> httpx.Response:
-    message: dict = {'role': 'assistant', 'content': None}
+    message: dict = {'role': 'assistant', 'content': content}
     if with_tool_call:
         message['tool_calls'] = [
             {
@@ -148,10 +149,22 @@ async def test_authentication_error_is_not_retried_or_added_to_circuit(configure
 
 
 @pytest.mark.asyncio
+async def test_content_fallback_when_no_tool_calls(configured: None) -> None:
+    """Bedrock sometimes returns text content instead of a tool call despite tool_choice=required."""
+    client = AsyncMock()
+    client.post.return_value = _response(with_tool_call=False, content=_VALID_JSON, finish_reason='stop')
+
+    result = await OpenRouterSupportProvider(client=client).generate(_request(), Mock())
+
+    assert result.result.decision == 'answer'
+
+
+@pytest.mark.asyncio
 async def test_circuit_opens_after_repeated_retryable_request_failures(
     configured: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, 'AI_SUPPORT_PROVIDER_MAX_RETRIES', 0)
+
     client = AsyncMock()
     client.post.return_value = httpx.Response(529)
     provider = OpenRouterSupportProvider(client=client, clock=lambda: 100.0)
@@ -177,8 +190,10 @@ async def test_truncation_fail_closed(configured: None) -> None:
 @pytest.mark.asyncio
 async def test_missing_tool_call_fail_closed(configured: None) -> None:
     client = AsyncMock()
-    # 200 but no tool_calls (model ignored the forced tool_choice) — fail closed.
-    client.post.return_value = _response(with_tool_call=False, finish_reason='stop')
+    # 200, no tool_calls, and no parseable JSON in content — fail closed.
+    client.post.return_value = _response(
+        with_tool_call=False, content='Извините, я не могу помочь с этим.', finish_reason='stop'
+    )
 
     with pytest.raises(AiSupportProviderError, match='provider_invalid_response'):
         await OpenRouterSupportProvider(client=client).generate(_request(), Mock())

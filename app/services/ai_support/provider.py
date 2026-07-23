@@ -49,6 +49,48 @@ def _normalize_citation(value: str) -> str:
     return candidate
 
 
+def _extract_json_object(content: str) -> str | None:
+    """Return the first balanced ``{...}`` object in ``content``, or None.
+
+    Strips markdown fences and scans brace depth so trailing prose or a fenced
+    block does not break extraction. Used as a fallback when the provider returns
+    the answer as text content instead of a tool call.
+    """
+    text = content.strip()
+    if text.startswith('```'):
+        newline = text.find('\n')
+        if newline != -1:
+            text = text[newline + 1 :]
+        stripped = text.rstrip()
+        if stripped.endswith('```'):
+            text = stripped[:-3]
+    start = text.find('{')
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == '\\':
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+
 class _AiSupportProviderBase(abc.ABC):
     """Shared fail-closed retry/circuit/semaphore loop for all providers."""
 
@@ -258,10 +300,20 @@ class OpenRouterSupportProvider(_AiSupportProviderBase):
             raise AiSupportProviderError('provider_invalid_response')
         message = choice.get('message') or {}
         tool_calls = message.get('tool_calls') or []
-        if not tool_calls:
-            raise AiSupportProviderError('provider_invalid_response')
-        arguments = (tool_calls[0].get('function') or {}).get('arguments') or ''
-        raw = json.loads(arguments)
+        if tool_calls:
+            arguments = (tool_calls[0].get('function') or {}).get('arguments') or ''
+            raw = json.loads(arguments)
+        else:
+            # Fallback: some upstreams (e.g. Amazon Bedrock) occasionally return
+            # the answer as text content instead of a tool call despite
+            # tool_choice=required. Recover the JSON from content/reasoning.
+            content = message.get('content') or ''
+            if not content:
+                content = message.get('reasoning_content') or message.get('reasoning') or ''
+            extracted = _extract_json_object(content)
+            if extracted is None:
+                raise AiSupportProviderError('provider_invalid_response')
+            raw = json.loads(extracted)
         # Models sometimes annotate a section id with a free-form suffix after ':' or
         # whitespace (e.g. "TARIFFS: Семейный — 2399 ₽"). Keep only the leading section-id
         # token so the result validator's SECTION_ID_RE accepts it.
